@@ -457,6 +457,127 @@
     font-family: ui-monospace, "JetBrains Mono", monospace;
     color: var(--color-primary);
   }
+
+  /* ponytail: import panel reuses the same card surface, input tokens, and
+  eyebrow labels as the rest of the page. Specifically avoids <input
+  type="date"> because the server's parse_folder_date() strictly rejects
+  YYYY-MM-DD; a text input with formatDateDash gives actual MM-DD-YYYY UX. */
+  section.add-data {
+    background: var(--bg-card);
+    border: var(--border-normal) solid var(--border-gray);
+    border-radius: var(--rounded-large);
+    padding: 22px;
+    margin-bottom: 28px;
+  }
+  section.add-data h2 {
+    margin: 0 0 6px;
+    font-size: 13px;
+    font-weight: var(--font-bold);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-primary);
+  }
+  section.add-data .explainer {
+    color: var(--color-muted);
+    font-size: 12px;
+    margin: 0 0 16px;
+    line-height: 1.6;
+  }
+  section.add-data .explainer code {
+    background: var(--bg-primary);
+    padding: 1px 6px;
+    border-radius: var(--rounded-small);
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--color-orange);
+  }
+  .import-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr auto;
+    gap: 12px;
+    align-items: end;
+  }
+  @media (max-width: 800px) { .import-form { grid-template-columns: 1fr; } }
+  .import-form .field { display: grid; gap: 6px; }
+  .import-form .field > span {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--color-muted);
+    font-weight: var(--font-medium);
+  }
+  .import-form input[type="text"],
+  .import-form input[type="file"] {
+    appearance: none;
+    background: var(--bg-primary);
+    border: var(--border-normal) solid var(--border-gray);
+    color: var(--color-primary);
+    border-radius: var(--rounded-normal);
+    padding: 10px 14px;
+    font: inherit;
+    font-size: 13px;
+    transition: border-color 160ms ease, background 160ms ease;
+  }
+  .import-form input[type="text"]:focus {
+    outline: none;
+    border-color: var(--color-orange);
+    background: var(--bg-card);
+  }
+  .import-form input[type="file"] {
+    padding: 8px 12px;
+    cursor: pointer;
+  }
+  .import-form input[type="file"]::file-selector-button {
+    appearance: none;
+    background: transparent;
+    border: var(--border-normal) solid var(--border-gray);
+    color: var(--color-primary);
+    border-radius: var(--pill);
+    padding: 5px 12px;
+    margin-right: 10px;
+    font: inherit;
+    font-size: 11px;
+    font-weight: var(--font-medium);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+  }
+  .import-form input[type="file"]:hover::file-selector-button {
+    background: var(--color-orange);
+    border-color: var(--color-orange);
+    color: var(--color-white);
+  }
+  .import-form input[type="file"]:focus { outline: none; border-color: var(--color-orange); }
+  .import-btn {
+    appearance: none;
+    background: var(--color-orange);
+    border: 0;
+    color: var(--color-white);
+    border-radius: var(--pill);
+    padding: 11px 22px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: var(--font-bold);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 140ms ease, transform 120ms ease;
+    height: 42px;
+  }
+  .import-btn:hover { background: #e14e22; }
+  .import-btn:active { transform: translateY(1px); }
+  .import-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .import-status {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--color-muted);
+    min-height: 1em;
+    line-height: 1.5;
+  }
+  .import-status.ok { color: var(--color-inspire); font-weight: var(--font-medium); }
+  .import-status.ok code { color: var(--color-primary); font-family: ui-monospace, "JetBrains Mono", monospace; }
+  .import-status.err { color: var(--color-orange); font-weight: var(--font-medium); }
 </style>
 </head>
 <body>
@@ -511,6 +632,41 @@
       <input class="search" id="disabled-search" placeholder="Filter usernames…" autocomplete="off">
       <ul class="list" id="disabled-list"></ul>
     </div>
+  </section>
+
+  <!-- ponytail: a date + two file fields + a submit. Browser POSTs the multipart
+  to /import, which stages data/<MM-DD-YYYY>/{followers_1.json,following.json}
+  and re-runs analyze. Date input is text not date so the server's strict
+  MM-DD-YYYY parser gets exactly the bytes it wants. -->
+  <section class="add-data">
+    <h2>Add data</h2>
+    <p class="explainer">
+      Stage a new snapshot from the browser. Type today's date as
+      <code>MM-DD-YYYY</code> (dashes auto-insert), then attach the
+      <code>followers_1.json</code> and <code>following.json</code> files
+      from your Instagram export. The server drops them into
+      <code>data/&lt;date&gt;/</code> and refreshes the report.
+    </p>
+    <form id="import-form" class="import-form" autocomplete="off">
+      <label class="field">
+        <span>Date</span>
+        <input type="text" id="import-date" placeholder="MM-DD-YYYY"
+               maxlength="10" inputmode="numeric" pattern="\d{2}-\d{2}-\d{4}"
+               aria-label="Snapshot date in MM-DD-YYYY">
+      </label>
+      <label class="field">
+        <span>Followers file</span>
+        <input type="file" id="import-followers" accept=".json,application/json"
+               aria-label="followers_1.json">
+      </label>
+      <label class="field">
+        <span>Following file</span>
+        <input type="file" id="import-following" accept=".json,application/json"
+               aria-label="following.json">
+      </label>
+      <button type="submit" class="import-btn">Import snapshot</button>
+    </form>
+    <div id="import-status" class="import-status" role="status" aria-live="polite"></div>
   </section>
 
   <footer>
@@ -793,7 +949,89 @@ async function load() {
   wireSearch();
   wireFlagButtons();
   wireDisclosure();
+  wireImport();
   render();
+}
+
+// ponytail: only digits survive, then dashes slot in after positions 2 and 5.
+// Run on every keystroke so by the time the user types the year the input is
+// already visible in MM-DD-YYYY form, no Tab-to-confirm needed.
+function formatDateDash(input) {
+  let v = input.value.replace(/\D/g, "");
+  if (v.length > 2) v = v.slice(0, 2) + "-" + v.slice(2);
+  if (v.length > 5) v = v.slice(0, 5) + "-" + v.slice(5);
+  input.value = v.slice(0, 10);
+}
+
+let _importWired = false;
+function wireImport() {
+  if (_importWired) return;
+  _importWired = true;
+
+  const form = $("import-form");
+  const dateEl = $("import-date");
+  const followersEl = $("import-followers");
+  const followingEl = $("import-following");
+  const status = $("import-status");
+  const submitBtn = form.querySelector('button[type="submit"]');
+
+  dateEl.addEventListener("input", () => formatDateDash(dateEl));
+
+  const DATE_OK = /^\d{2}-\d{2}-\d{4}$/;
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    status.textContent = "";
+    status.className = "import-status";
+
+    // ponytail: client-side guards mirror the server's parse_folder_date so the
+    // user gets the same error text in either place.
+    const dateVal = dateEl.value.trim();
+    if (!DATE_OK.test(dateVal)) {
+      status.textContent = "Date must be MM-DD-YYYY (e.g. 07-15-2026).";
+      status.classList.add("err");
+      return;
+    }
+    if (!followersEl.files[0] || !followingEl.files[0]) {
+      status.textContent = "Pick both the followers and following JSON files.";
+      status.classList.add("err");
+      return;
+    }
+
+    const fd = new FormData();
+    fd.append("date", dateVal);
+    fd.append("followers", followersEl.files[0]);
+    fd.append("following", followingEl.files[0]);
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Importing…";
+    try {
+      const r = await fetch("/import", { method: "POST", body: fd });
+      // ponytail: server sends plain-text send_error() bodies on 4xx/5xx;
+      // accept either shape so the UX is uniform.
+      const txt = await r.text();
+      if (!r.ok) throw new Error(txt || `HTTP ${r.status}`);
+      const res = JSON.parse(txt);
+      status.innerHTML = `Imported ${res.followers.toLocaleString()} followers and ${res.following.toLocaleString()} following into <code>${res.snapshot_folder}</code>. Reloading report…`;
+      // ponytail: assign className (not classList.add) so any prior .err from an
+      // earlier attempt doesn't carry alongside .ok; otherwise the message
+      // chrome mixes and a stale `<code>` chip from a previous error leaks
+      // into the success-style line.
+      status.className = "import-status ok";
+      // ponytail: give the status line a beat to render before we re-fetch and
+      // wipe the panels, otherwise fast-import feels silent.
+      setTimeout(() => load().catch(err => {
+        status.className = "import-status err";
+        status.textContent = `Saved to ${res.snapshot_folder}, but report refresh failed: ${err.message}`;
+      }), 350);
+    } catch (err) {
+      status.className = "import-status err";
+      const msg = String(err.message || err).replace(/^HTTP \d+:?\s*/, "");
+      status.textContent = `Import failed: ${msg}`;
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Import snapshot";
+    }
+  });
 }
 
 load().catch((e) => {

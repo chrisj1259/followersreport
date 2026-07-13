@@ -198,14 +198,88 @@ def filter_disabled_accounts_by_network(snapshot: dict, *, delay: float = 0.25) 
 # ---------- parsing ----------
 
 
+def _parse_multipart(content_type: str, body: bytes):
+    """Tiny stdlib multipart/form-data parser. Returns (fields, files).
+
+    fields: {name: decoded_string} for non-file form fields.
+    files:  {name: raw_bytes} for uploaded files (Content-Disposition has filename=).
+
+    ponytail: hand-rolled because cgi.FieldStorage is deprecated in 3.13. Hand-
+    rolled is also much smaller — RFC 2046 favors simplicity here. Browsers
+    pick a random boundary that doesn't collide with payload bytes, so a
+    literal split is safe in practice.
+    """
+    m = re.search(r'boundary=(?:"([^"]+)"|([^;\s]+))', content_type)
+    if not m:
+        return None
+    delim = b"--" + (m.group(1) or m.group(2)).encode()
+    fields: dict[str, str] = {}
+    files: dict[str, bytes] = {}
+    for part in body.split(delim):
+        part = part.strip(b"\r\n")
+        if not part or part == b"--":
+            continue  # leading empty, trailing terminator
+        head, _, data = part.partition(b"\r\n\r\n")
+        if not head:
+            continue
+        data = data.rstrip(b"\r\n")
+        name_m = re.search(rb'name="([^"]+)"', head)
+        if not name_m:
+            continue
+        name = name_m.group(1).decode("utf-8", "replace")
+        if b'filename=' in head:
+            files[name] = data
+        else:
+            fields[name] = data.decode("utf-8", "replace")
+    return fields, files
+
+
+def _selftest() -> None:
+    """Lightweight self-check for /import's parsing + date code-path.
+
+    Run with: python -c "import run; run._selftest()"
+    """
+    body = (
+        b'--AaB03x\r\nContent-Disposition: form-data; name="date"\r\n\r\n'
+        b'07-15-2026\r\n'
+        b'--AaB03x\r\nContent-Disposition: form-data; name="followers"; filename="x.json"\r\nContent-Type: application/json\r\n\r\n'
+        b'{"a":1}\r\n'
+        b'--AaB03x\r\nContent-Disposition: form-data; name="following"; filename="y.json"\r\nContent-Type: application/json\r\n\r\n'
+        b'[]\r\n'
+        b'--AaB03x--\r\n'
+    )
+    fields, files = _parse_multipart('multipart/form-data; boundary=AaB03x', body)
+    assert fields.get("date") == "07-15-2026", fields
+    assert files.get("followers") == b'{"a":1}', files
+    assert files.get("following") == b"[]", files
+
+    parse_folder_date("07-15-2026")  # accept canonical
+    for bad in ("2026-07-15", "07/15/2026", "", "07-15-26", "07-15-202",
+                "07-ab-2026", "abcd-ef-ghij", "7-15-2026",
+                "007-15-2026", "07-015-2026"):
+        try:
+            parse_folder_date(bad)
+            assert False, f"should have rejected {bad!r}"
+        except ValueError:
+            pass
+    print("self-check ok")
+
+
 def parse_folder_date(name: str) -> datetime:
-    # ponytail: only MM-DD-YYYY. YYYY-MM-DD is rejected so a mistyped date the
-    # user *thinks* is unambiguous doesn't silently land in the wrong folder.
+    # ponytail: strict MM-DD-YYYY only. Two guards: (1) YYYY-MM-DD is
+    # rejected so a mistyped date the user *thinks* is unambiguous doesn't
+    # land in the wrong folder; (2) any deviation from `DD-DD-DDDD`
+    # 2-digit components is rejected too — Python's %m-%d-%Y strptime is
+    # permissive ('7-15-2026' parses fine) but the user and README both
+    # ask for the strict form. One root-cause tighten here covers both the
+    # CLI flow and the browser POST /import flow.
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", name):
         raise ValueError(
             f"date must be in MM-DD-YYYY format (got YYYY-MM-DD {name!r}; "
             f"e.g. MM-DD-YYYY would be 07-15-2026)"
         )
+    if not re.fullmatch(r"\d{2}-\d{2}-\d{4}", name):
+        raise ValueError(f"date must be in MM-DD-YYYY format (got {name!r})")
     try:
         return datetime.strptime(name, "%m-%d-%Y")
     except ValueError:
@@ -437,9 +511,12 @@ def fold_pair(prev: tuple[str, list[dict], list[dict]],
 
 
 class FlagHandler(http.server.SimpleHTTPRequestHandler):
-    """Like SimpleHTTPRequestHandler but accepts POST /flag.
+    """Like SimpleHTTPRequestHandler but accepts POST /flag and POST /import.
 
     /flag   — toggle a username in data/disabledaccounts.json (small JSON body).
+    /import — multipart upload: date + followers + following JSON files.
+              Stages into data/<MM-DD-YYYY>/ then re-runs analyze so the next
+              page refresh picks it up.
 
     Static file serving still works for / and /dist/* because do_GET / do_HEAD
     fall through to super(). Silent default access log keeps the server
@@ -447,9 +524,13 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
 
     ponytail: bind to localhost only — refusing to expose the report on the LAN.
     """
+    IMPORT_MAX_BYTES = 50_000_000  # ~50 MB; an IG export is JSON only, well under
+
     def do_POST(self) -> None:  # type: ignore[override]
         if self.path == "/flag":
             self._handle_flag()
+        elif self.path == "/import":
+            self._handle_import()
         else:
             self.send_error(404, "no such endpoint")
 
@@ -484,6 +565,82 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             return
         self._send_json(200, {"ok": True, "username": username.lower(),
                               "action": action, "total": len(new_list)})
+
+    def _handle_import(self) -> None:
+        """Stage an in-browser upload into data/<date>/ and refresh the report.
+
+        ponytail: tiny stdlib multipart parser instead of importing cgi (deprecated
+        in 3.13). Splits body on --boundary, partitions each part on \r\n\r\n
+        into (headers, data), reads name= / filename= from Content-Disposition.
+        Delegates to _stage_snapshot by writing the uploads into a tempdir —
+        reusing the substring filename router instead of branching the funcs.
+        """
+        ctype = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in ctype:
+            self.send_error(400, "expected multipart/form-data")
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            self.send_error(400, "malformed Content-Length header")
+            return
+        if length <= 0 or length > self.IMPORT_MAX_BYTES:
+            self.send_error(400, f"body must be 1..{self.IMPORT_MAX_BYTES} bytes")
+            return
+        parsed = _parse_multipart(ctype, self.rfile.read(length))
+        if parsed is None:
+            self.send_error(400, "could not parse multipart body")
+            return
+        fields, files = parsed
+        date_str = (fields.get("date") or "").strip()
+        try:
+            parse_folder_date(date_str)
+        except ValueError as e:
+            self.send_error(400, f"bad date: {e}")
+            return
+        if "followers" not in files or "following" not in files:
+            self.send_error(400, "need both 'followers' and 'following' file fields")
+            return
+
+        # ponytail: capture whether the destination folder already existed so a
+        # failed analyze only wipes the freshly-staged copies — never the user's
+        # prior snapshot for that date. _stage_snapshot overwrites in place, so
+        # without this guard a transient analyze SystemExit would also nuke
+        # pre-existing data on the re-import path.
+        dest_existed = (DATA / date_str).exists()
+
+        # ponytail: write to a tempdir with names matching _stage_snapshot's
+        # substring router, then delegate. The tempdir cleans itself up.
+        with tempfile.TemporaryDirectory(prefix="import-") as td:
+            src = Path(td)
+            (src / "followers_1.json").write_bytes(files["followers"])
+            (src / "following.json").write_bytes(files["following"])
+            try:
+                n_f, n_g = _stage_snapshot(src, date_str)
+            except SystemExit as e:
+                self.send_error(400, str(e))
+                return
+
+            # ponytail: re-run analyze via Namespace(check_disabled=False) so the
+            # just-staged snapshot is in dist/report.json by the next page load.
+            # We don't expose port/subcommand here — run_analyze only reads
+            # check_disabled off the Namespace.
+            try:
+                run_analyze(argparse.Namespace(check_disabled=False))
+            except SystemExit as e:
+                if not dest_existed:
+                    # Only safe to sweep when the folder was newly created by
+                    # _stage_snapshot — anything that was there before this
+                    # request is the user's, not ours, and stays.
+                    shutil.rmtree(DATA / date_str, ignore_errors=True)
+                self.send_error(500, f"staged files into data/{date_str}/ but analyze failed: {e}")
+                return
+
+            self._send_json(200, {
+                "ok": True, "date": date_str,
+                "followers": n_f, "following": n_g,
+                "snapshot_folder": f"data/{date_str}/",
+            })
 
     # ponytail: silence default access-log lines on stdout — they make the
     # terminal noisy while the user is interacting via the UI.
