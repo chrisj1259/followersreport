@@ -43,6 +43,15 @@ There is nothing to install. The pipeline is Python's standard library only.
 
    The report always shows the latest snapshot.
 
+## Adding a snapshot from the browser
+
+The same `import` flow runs without leaving the report page. Scroll to **Add data** at the bottom of the page while the server is running:
+
+1. **Date** — type the snapshot's date. As you type digits, dashes slot in automatically after the 2nd and 5th characters, so `07152026` becomes `07-15-2026` as you type. The field is `MM-DD-YYYY`-strict: unpadded `7-15-2026` and `YYYY-MM-DD` are both rejected.
+2. **Followers file** — attach `followers_1.json` (the file inside your unzipped Instagram export).
+3. **Following file** — attach `following.json`.
+4. Click **Import snapshot**. The server stages both files into `data/<MM-DD-YYYY>/` and re-runs analyze in the same request — `dist/report.json` is rewritten before the browser's auto-refresh, so the next render shows the new counts without restarting `python run.py`.
+
 ## Flagging suspicious accounts
 
 Hover any row in **People I don't follow back** or **People who don't follow me back** and click **Flag**. The handle moves into the "Likely disabled / deactivated" panel (dark section at the bottom) and is excluded from your active lists going forward. Click **Unflag** on the dark panel to restore it. The disclosure chevron above the disabled panel auto-opens so you can see the move take effect immediately.
