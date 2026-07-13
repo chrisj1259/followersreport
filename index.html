@@ -12,8 +12,8 @@
   font, pill-shaped chips, FA5D29 / 49B3FC / AAEEC4 / 502bd8 accent palette,
   uppercase eyebrow labels with .1em tracking, soft pastel count badges, and
   rounded 4 / 8 / 16px corners. Light editorial primary bg; a single dark
-  --bg-secondary section is used for the 'Likely disabled' panel so the flag
-  action visually stands apart from the active lists. */
+  --bg-secondary section is used for the 'Likely disabled' panel so flagged
+  accounts visually stand apart from the active lists. */
   :root {
     /* font tokens — Inter Tight variable, weights matched to Awwwards */
     --font-1: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Inter", sans-serif;
@@ -34,6 +34,7 @@
     --color-soft-orange: #f8f0ee;
     --color-soft-blue: #e1f0fc;
     --color-soft-purple: #ece6f8;
+    --color-soft-muted: #ececec;
 
     /* surface tokens */
     --bg-primary: #F8F8F8;
@@ -95,51 +96,27 @@
     letter-spacing: -0.01em;
     margin: 0;
   }
+  .meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
   .meta .pill {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     padding: 7px 14px;
     border-radius: var(--pill);
-    background: var(--color-primary);
     color: var(--color-white);
     font-size: 12px;
     font-weight: var(--font-medium);
     letter-spacing: 0.02em;
+    white-space: nowrap;
   }
+  .meta .pill.dark    { background: var(--color-primary); }
+  .meta .pill.subtle  { background: var(--color-soft-muted); color: var(--color-muted-2); }
 
-  /* ---------- tabs ---------- */
-  nav.tabs {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-bottom: 28px;
-  }
-  .tab {
-    appearance: none;
-    border: var(--border-normal) solid var(--border-gray);
-    background: var(--bg-card);
-    color: var(--color-primary);
-    font: inherit;
-    font-size: 13px;
-    font-weight: var(--font-medium);
-    letter-spacing: 0.02em;
-    padding: 10px 18px;
-    border-radius: var(--pill);
-    cursor: pointer;
-    transition: background 180ms ease, color 180ms ease, border-color 180ms ease, transform 180ms ease;
-  }
-  .tab:hover {
-    background: var(--color-primary);
-    color: var(--color-white);
-    border-color: var(--color-primary);
-    transform: translateY(-1px);
-  }
-  .tab.active {
-    background: var(--color-primary);
-    color: var(--color-white);
-    border-color: var(--color-primary);
-  }
 
   /* ---------- stats ---------- */
   .stats {
@@ -308,7 +285,8 @@
     font-size: 13px;
   }
 
-  /* ponytail: hover-revealed pill button — collapses to a soft chip on row hover */
+  /* ---------- flag/unflag pill buttons ---------- */
+  /* ponytail: hover-revealed pill buttons — collapse to a soft chip on row hover */
   .list li button.flag-btn, .list li button.unflag-btn {
     appearance: none;
     font: inherit;
@@ -332,62 +310,13 @@
   .list li:hover button.unflag-btn,
   .list li:focus-within button.unflag-btn,
   .list li button.unflag-btn:focus-visible { opacity: 0.95; }
-  .list li button.flag-btn:hover   { background: var(--color-orange); color: var(--color-white); border-color: var(--color-orange); }
+  .list li button.flag-btn:hover { background: var(--color-orange); color: var(--color-white); border-color: var(--color-orange); }
   .list li button.unflag-btn:hover { background: var(--color-blue);   color: var(--color-white); border-color: var(--color-blue); }
   .list li button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  /* ---------- weekly soft-orange section ---------- */
-  section.weekly {
-    background: var(--color-soft-orange);
-    border: var(--border-normal) solid var(--border-gray);
-    border-radius: var(--rounded-large);
-    padding: 24px;
-    margin-top: 24px;
-  }
-  section.weekly h2 {
-    margin: 0 0 18px;
-    font-size: 13px;
-    font-weight: var(--font-bold);
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--color-primary);
-  }
-  .deltas {
-    display: grid;
-    gap: 14px;
-    grid-template-columns: repeat(4, 1fr);
-    margin-bottom: 18px;
-  }
-  @media (max-width: 800px) { .deltas { grid-template-columns: repeat(2, 1fr); } }
-  .delta {
-    background: var(--bg-card);
-    border: var(--border-normal) solid var(--border-gray);
-    border-radius: var(--rounded-normal);
-    padding: 16px 18px;
-  }
-  .delta .label {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--color-muted);
-    font-weight: var(--font-medium);
-    margin-bottom: 6px;
-  }
-  .delta .num {
-    font-family: var(--font-1);
-    font-variant-numeric: tabular-nums;
-    font-weight: var(--font-bold);
-    font-size: 28px;
-    line-height: 1;
-  }
-  .delta.up   .num { color: var(--color-orange); }
-  .delta.down .num { color: var(--color-primary); }
-  .delta.muted .num { color: var(--color-muted); }
-
   /* ---------- disabled / flagged dark section ---------- */
-  /* ponytail: force every descendant to render in the light palette so
-  inherited browser defaults (link blue on visited, dark 'color: inherit'
-  from .list li before overrides) can't paint black-on-black. */
+  /* ponytail: dark panel with full descendant color override so link blue /
+  inherited dark text can't paint black-on-black. */
   section.disabled-section, section.disabled-section * {
     color: var(--color-white);
   }
@@ -456,154 +385,46 @@
     border-color: var(--color-orange);
   }
 
-  /* ---------- add-snapshot form ---------- */
-  /* ponytail: light editorial card with an orange accent strip (matches the
-  'latest follower' stat). Reuses the existing pill/rounded tokens so the new
-  section feels native, not bolted on. */
-  section.add-snapshot {
-    background: var(--bg-card);
-    border: var(--border-normal) solid var(--border-gray);
-    border-radius: var(--rounded-large);
-    padding: 22px;
-    margin-top: 24px;
-    position: relative;
-    overflow: hidden;
-  }
-  section.add-snapshot::before {
-    content: "";
-    position: absolute;
-    top: 0; left: 0;
-    width: 4px; height: 100%;
-    background: var(--color-orange);
-  }
-  section.add-snapshot h2 {
-    margin: 0 0 6px;
-    font-size: 13px;
-    font-weight: var(--font-bold);
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--color-primary);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-  section.add-snapshot h2 .count {
+  /* disclosure toggle: red circle with chevron, positioned above the body
+  content of the Likely-disabled section so users can collapse/expand the
+  flagged-accounts list without scrolling. */
+  .disabled-section .disclosure-toggle {
     display: inline-flex;
     align-items: center;
-    min-width: 24px;
-    padding: 2px 10px;
-    border-radius: var(--pill);
-    background: var(--color-soft-orange);
-    color: var(--color-orange);
-    font-size: 11px;
-    font-weight: var(--font-bold);
-  }
-  section.add-snapshot .explainer {
-    color: var(--color-muted-2);
-    font-size: 13px;
-    margin: 0 0 18px;
-    line-height: 1.6;
-  }
-  section.add-snapshot .explainer code {
-    background: var(--bg-primary);
-    padding: 1px 6px;
-    border-radius: var(--rounded-small);
-    font-family: ui-monospace, "JetBrains Mono", monospace;
-    font-size: 12px;
-    color: var(--color-orange);
-  }
-  section.add-snapshot .row {
-    display: grid;
-    gap: 12px;
-    grid-template-columns: 200px 1fr 1fr auto;
-    align-items: end;
-  }
-  @media (max-width: 800px) {
-    section.add-snapshot .row { grid-template-columns: 1fr; }
-  }
-  section.add-snapshot label {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--color-muted);
-    font-weight: var(--font-medium);
-  }
-  section.add-snapshot input[type="text"],
-  section.add-snapshot input[type="file"] {
-    font: inherit;
-    appearance: none;
-    border: var(--border-normal) solid var(--border-gray);
-    border-radius: var(--rounded-normal);
-    padding: 10px 14px;
-    font-size: 13px;
-    background: var(--bg-primary);
-    color: var(--color-primary);
-    text-transform: none;
-    letter-spacing: 0;
-    font-weight: var(--font-normal);
-    transition: border-color 160ms ease, background 160ms ease;
-  }
-  section.add-snapshot input[type="text"]:focus {
-    outline: none;
-    border-color: var(--color-orange);
-    background: var(--bg-card);
-  }
-  section.add-snapshot input[type="file"] {
-    padding: 8px 10px;
-    cursor: pointer;
-  }
-  section.add-snapshot input[type="file"]::file-selector-button {
-    appearance: none;
-    font: inherit;
-    font-size: 11px;
-    font-weight: var(--font-medium);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 6px 12px;
-    border-radius: var(--pill);
-    background: var(--bg-card);
-    color: var(--color-primary);
-    border: var(--border-normal) solid var(--border-gray);
-    margin-right: 10px;
-    cursor: pointer;
-  }
-  section.add-snapshot input[type="file"]::file-selector-button:hover {
-    background: var(--color-primary); color: var(--color-white); border-color: var(--color-primary);
-  }
-  section.add-snapshot button.submit {
-    appearance: none;
-    font: inherit;
-    font-size: 12px;
-    font-weight: var(--font-medium);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 11px 22px;
-    border-radius: var(--pill);
-    background: var(--color-primary);
+    justify-content: center;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: var(--color-orange);
     color: var(--color-white);
-    cursor: pointer;
     border: 0;
+    cursor: pointer;
+    padding: 0;
+    margin: 4px 0 10px;
     transition: background 160ms ease, transform 160ms ease;
   }
-  section.add-snapshot button.submit:hover {
-    background: var(--color-orange);
-    transform: translateY(-1px);
+  .disabled-section .disclosure-toggle:hover { background: #e14e22; }
+  .disabled-section .disclosure-toggle:focus-visible {
+    outline: 2px solid var(--color-orange);
+    outline-offset: 3px;
   }
-  section.add-snapshot button.submit:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
-  section.add-snapshot .imp-status {
-    margin-top: 14px;
-    font-size: 12px;
-    line-height: 1.6;
-    color: var(--color-muted-2);
-    min-height: 18px;
+  .disabled-section .disclosure-toggle svg { transition: transform 220ms ease-out; }
+  .disabled-section[data-collapsed="false"] .disclosure-toggle svg { transform: rotate(180deg); }
+
+  /* ponytail: smooth dropdown — animate max-height + opacity instead of
+  display:none. Caps at 1500px (~30 rows of the disabled-account list,
+  comfortably above today's typical 22). ease-out feels like the panel
+  settles into place rather than snapping. */
+  .disabled-section .disabled-body {
+    max-height: 1500px;
+    opacity: 1;
+    overflow: hidden;
+    transition: max-height 360ms ease-out, opacity 220ms ease-out;
   }
-  section.add-snapshot .imp-status.error  { color: var(--color-orange); font-weight: var(--font-medium); }
-  section.add-snapshot .imp-status.ok     { color: #2a9b65;                  font-weight: var(--font-medium); }
-  section.add-snapshot .imp-status.loading { color: var(--color-blue);        font-weight: var(--font-medium); }
+  .disabled-section[data-collapsed="true"] .disabled-body {
+    max-height: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
 
   /* ---------- empty state ---------- */
   .empty-state {
@@ -644,21 +465,13 @@
   <header class="top">
     <div class="brand">
       <div class="eyebrow">Instagram · Follower report</div>
-      <h1>Last 7 days on Instagram</h1>
+      <h1>Follower report</h1>
     </div>
     <div class="meta">
-      <span class="pill" id="generated">Loading…</span>
+      <span class="pill dark"   id="snapshot-info">—</span>
+      <span class="pill subtle" id="generated">Loading…</span>
     </div>
   </header>
-
-  <nav class="tabs" id="tabs"></nav>
-
-  <section id="single-only-empty" class="empty-state" hidden>
-    <strong>Only one snapshot so far.</strong>
-    Use the upload form below, or drop another week into
-    <code>data/&lt;MM-DD-YYYY&gt;/</code> and re-run <code>python run.py</code>,
-    to see week-over-week unfollowers.
-  </section>
 
   <section class="stats" id="stats"></section>
 
@@ -675,68 +488,36 @@
     </article>
   </section>
 
-  <section id="disabled-section" class="disabled-section" hidden>
+  <section id="disabled-section" class="disabled-section" hidden data-collapsed="true">
     <h2>
       Likely disabled / deactivated
       <span class="count" id="disabled-count">0</span>
     </h2>
-    <p class="explainer">
-      Excluded from <em>Don't follow me back</em> because
-      <code>python run.py --check-disabled</code> couldn't load their profile, or you
-      flagged them via the row buttons (persisted to <code>data/disabledaccounts.json</code>).
-      Click an account to unflag and restore it.
-    </p>
-    <input class="search" id="disabled-search" placeholder="Filter usernames…" autocomplete="off">
-    <ul class="list" id="disabled-list"></ul>
-  </section>
-
-  <section class="weekly" id="weekly" hidden>
-    <h2 id="weekly-title">Week over week</h2>
-    <div class="deltas" id="deltas"></div>
-    <div class="split">
-      <article class="panel">
-        <h2>Unfollowers <span class="count" id="lost-count">0</span></h2>
-        <input class="search" id="lost-search" placeholder="Filter usernames…" autocomplete="off">
-        <ul class="list" id="lost-list"></ul>
-      </article>
-      <article class="panel purple">
-        <h2>Unfollowed me — I never followed back <span class="count" id="nb-count">0</span></h2>
-        <input class="search" id="nb-search" placeholder="Filter usernames…" autocomplete="off">
-        <ul class="list" id="nb-list"></ul>
-      </article>
+    <button class="disclosure-toggle" id="disabled-toggle" type="button"
+            aria-expanded="false" aria-controls="disabled-body"
+            aria-label="Show flagged accounts">
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"
+           fill="none" stroke="currentColor" stroke-width="2.4"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 9l6 6 6-6"/>
+      </svg>
+    </button>
+    <div class="disabled-body" id="disabled-body">
+      <p class="explainer">
+        Excluded from <em>Don't follow me back</em>: handles listed in
+        <code>data/disabledaccounts.json</code> or detected via
+        <code>python run.py --check-disabled</code>.
+      </p>
+      <input class="search" id="disabled-search" placeholder="Filter usernames…" autocomplete="off">
+      <ul class="list" id="disabled-list"></ul>
     </div>
-  </section>
-
-  <section class="add-snapshot">
-    <h2>
-      Add a new snapshot
-      <span class="count" id="imp-count" hidden></span>
-    </h2>
-    <p class="explainer">
-      Pick your <code>followers_1.json</code> and <code>following.json</code> files
-      from the Instagram data export and tell us the date the data was pulled.
-      Date format must be <code>MM-DD-YYYY</code> (e.g. <code>07-15-2026</code>).
-      Adding a snapshot refreshes the week-over-week numbers instantly.
-    </p>
-    <div class="row">
-      <label>Date
-        <input type="text" id="imp-date" placeholder="07-15-2026" autocomplete="off" maxlength="10">
-      </label>
-      <label>followers_1.json
-        <input type="file" id="imp-followers" accept=".json,application/json">
-      </label>
-      <label>following.json
-        <input type="file" id="imp-following" accept=".json,application/json">
-      </label>
-      <button class="submit" id="imp-submit" type="button">Add snapshot</button>
-    </div>
-    <div id="imp-status" class="imp-status"></div>
   </section>
 
   <footer>
-    Run <code>python run.py</code> (add <code>--check-disabled</code> to live-filter
-    disabled accounts) to refresh. On Windows, <code>serve.bat [--check-disabled]</code>
-    serves + opens the browser. Pass a port with <code>python run.py 9000</code>.
+    Run <code>python run.py [port]</code> to refresh. Add
+    <code>--check-disabled</code> to merge handles whose Instagram page
+    can't be loaded into the disabled panel. The report always shows the
+    most recent snapshot — read-only.
   </footer>
 </div>
 
@@ -747,10 +528,13 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   data: null,
-  snapshotIdx: 0,
-  weekIdx: -1,  // -1 = no week pair terminates at the currently selected snapshot
-  filters: { nfb: "", dfmb: "", lost: "", nb: "", disabled: "" },
+  filters: { nfb: "", dfmb: "", disabled: "" },
 };
+
+function latestSnapshot() {
+  if (!state.data || !state.data.snapshots.length) return null;
+  return state.data.snapshots[state.data.snapshots.length - 1];
+}
 
 function fmtDate(iso) {
   if (!iso) return "";
@@ -763,12 +547,12 @@ function fmtAgo(iso) {
   const d = new Date(iso);
   const ms = Date.now() - d.getTime();
   const s = Math.round(ms / 1000);
-  if (s < 60) return `updated ${s}s ago`;
+  if (s < 60) return `${s}s ago`;
   const m = Math.round(s / 60);
-  if (m < 60) return `updated ${m}m ago`;
+  if (m < 60) return `${m}m ago`;
   const h = Math.round(m / 60);
-  if (h < 48) return `updated ${h}h ago`;
-  return `updated on ${d.toLocaleDateString()}`;
+  if (h < 48) return `${h}h ago`;
+  return d.toLocaleDateString();
 }
 
 function fmtWhen(ts) {
@@ -816,33 +600,15 @@ function filterRows(records, q) {
   return records.filter(r => r.username.includes(q));
 }
 
-function renderTabs() {
-  const tabs = $("tabs");
-  tabs.innerHTML = "";
-  state.data.snapshots.forEach((s, i) => {
-    const b = document.createElement("button");
-    b.className = "tab" + (i === state.snapshotIdx ? " active" : "");
-    b.textContent = fmtDate(s.date_iso);
-    b.addEventListener("click", () => {
-      state.snapshotIdx = i;
-      // ponytail: a week pair's curr_folder must equal the selected snapshot;
-      // older snapshots have no terminating week — renderWeekly hides the block.
-      state.weekIdx = state.data.weeks.findIndex(w => w.curr_folder === s.date_folder);
-      render();
-    });
-    tabs.appendChild(b);
-  });
-}
-
 function renderStats(s) {
   const stats = $("stats");
   const c = s.counts;
   stats.innerHTML = "";
   const items = [
-    ["Followers",         c.followers,                    "Follow someone back soon?", "green"],
-    ["Following",         c.following,                    "people you follow",        "blue"],
-    ["I don't follow back",  c.not_followed_back,         "followers I haven't reciprocated", ""],
-    ["Don't follow me back", c.dont_follow_me_back,       "might drop these",         ""],
+    ["Followers",            c.followers,             "people who follow you",                 "green"],
+    ["Following",            c.following,             "people you follow",                     "blue"],
+    ["I don't follow back",  c.not_followed_back,     "followers I haven't reciprocated",      ""],
+    ["Don't follow me back", c.dont_follow_me_back,   "might drop these",                      ""],
   ];
   for (const [label, n, sub, cls] of items) {
     const el = document.createElement("div");
@@ -873,15 +639,10 @@ function renderPanel(listId, countId, records, total, filterKey, rowOpts = {}) {
   for (const r of filtered) list.appendChild(row(r, rowOpts));
 }
 
-function renderEmptyForSingle() {
-  $("single-only-empty").hidden = state.data.snapshots.length > 1;
-}
-
 function renderDisabledPanel(s) {
   const section = $("disabled-section");
   const list = (s && s.disabled_accounts) || [];
-  // ponytail: hide the panel entirely when there's nothing to show — keeps the
-  // default `--check-disabled`-off flow visually identical to before.
+  // ponytail: hide the panel entirely when there's nothing to show.
   if (list.length === 0) {
     section.hidden = true;
     return;
@@ -890,61 +651,17 @@ function renderDisabledPanel(s) {
   renderPanel("disabled-list", "disabled-count", list, list.length, "disabled", { flagButton: "remove" });
 }
 
-function renderWeekly() {
-  const root = $("weekly");
-  if (state.data.weeks.length === 0 || state.weekIdx < 0 || state.weekIdx >= state.data.weeks.length) {
-    root.hidden = true;
-    return;
-  }
-  const w = state.data.weeks[state.weekIdx];
-  root.hidden = false;
-  $("weekly-title").textContent = `Week over week: ${fmtDate(w.prev_folder)} → ${fmtDate(w.curr_folder)}`;
-
-  const d = $("deltas");
-  d.innerHTML = "";
-  const items = [
-    ["New followers",   w.counts.new_followers,    "up"],
-    ["Lost followers",  w.counts.lost_followers,   "down"],
-    ["New followings",  w.counts.new_followings,   "up"],
-    ["Lost followings", w.counts.lost_followings,  "down"],
-  ];
-  for (const [label, n, dir] of items) {
-    const el = document.createElement("div");
-    el.className = "delta " + (n === 0 ? "muted" : dir);
-    let display;
-    if (n === 0) {
-      display = "0";
-    } else if (dir === "up") {
-      display = "+" + n.toLocaleString();
-    } else {
-      display = "\u2212" + n.toLocaleString();
-    }
-    el.innerHTML = `
-      <div class="label">${label}</div>
-      <div class="num">${display}</div>
-    `;
-    d.appendChild(el);
-  }
-
-  renderPanel("lost-list", "lost-count", w.lost_followers, w.lost_followers.length, "lost");
-  renderPanel("nb-list",   "nb-count",   w.lost_never_followed_back, w.lost_never_followed_back.length, "nb");
-}
-
-function render() {
-  if (!state.data) return;
-  const s = state.data.snapshots[state.snapshotIdx];
-
-  $("generated").textContent = fmtAgo(state.data.generated_at);
-  renderTabs();
-  renderEmptyForSingle();
-  renderStats(s);
-  renderPanel("nfb-list", "nfb-count",  s.not_followed_back,   s.not_followed_back.length,   "nfb", { flagButton: true });
-  renderPanel("dfmb-list", "dfmb-count", s.dont_follow_me_back, s.dont_follow_me_back.length, "dfmb", { flagButton: true });
-  renderDisabledPanel(s);
-  renderWeekly();
+function renderHeader(s) {
+  // ponytail: render() guards on null s above, so this is always reached
+  // with a valid snapshot. Initial pill HTML stays at "—" until the first
+  // successful load resolves.
+  $("snapshot-info").textContent = `Snapshot \u00b7 ${fmtDate(s.date_iso)}`;
 }
 
 async function toggleFlag(btn, username, action) {
+  // ponytail: disable the button for the duration of the POST so a fast double-
+  // click can't fire two writes (last-one-wins on the server, but the UI
+  // ordering matters — both reads of client state below mutate arrays in place).
   btn.disabled = true;
   const original = btn.textContent;
   btn.textContent = action === "add" ? "Flagging…" : "Removing…";
@@ -958,28 +675,43 @@ async function toggleFlag(btn, username, action) {
       const t = await r.text().catch(() => "");
       throw new Error(`HTTP ${r.status}: ${t || "flag failed"}`);
     }
-    const s = state.data.snapshots[state.snapshotIdx];
+    const s = latestSnapshot();
     const rec =
       (s.dont_follow_me_back || []).find((x) => x.username === username) ||
       (s.not_followed_back  || []).find((x) => x.username === username) ||
-      (s.mutuals            || []).find((x) => x.username === username) ||
       (s.disabled_accounts  || []).find((x) => x.username === username);
     if (!rec) throw new Error("row vanished from client state");
     if (action === "add") {
-      for (const k of ["not_followed_back", "dont_follow_me_back", "mutuals"]) {
+      for (const k of ["not_followed_back", "dont_follow_me_back"]) {
         s[k] = (s[k] || []).filter((x) => x.username !== username);
       }
       s.disabled_accounts = (s.disabled_accounts || []).filter((x) => x.username !== username);
       s.disabled_accounts.push(rec);
+      // ponytail: open the disclosure so the user sees the move immediately.
+      // Even if section.hidden was still true when we got here (e.g. this was
+      // user.zero flagged so far), flip the disclosure now — renderDisabledPanel
+      // will unhide the section on the next render since disabled_accounts is
+      // populated, and we want both transitions (uncollapse + unhide) in one.
+      const section = $("disabled-section");
+      const toggle = $("disabled-toggle");
+      if (section && section.dataset.collapsed === "true") {
+        section.dataset.collapsed = "false";
+        toggle.setAttribute("aria-expanded", "true");
+        toggle.setAttribute("aria-label", "Hide flagged accounts");
+      }
     } else {
       s.disabled_accounts = (s.disabled_accounts || []).filter((x) => x.username !== username);
       // ponytail: on unflag we don't know the original bucket — push back to
-      // DFMB (the most common source of a manual flag). Next analyze run
-      // will reclassify it from data/disabledaccounts.json.
-      s.dont_follow_me_back = s.dont_follow_me_back.filter((x) => x.username !== username).concat([rec]);
+      // DFMB (the most common source of a manual flag). Next analyze run will
+      // reclassify it from data/disabledaccounts.json.
+      s.dont_follow_me_back = (s.dont_follow_me_back || []).filter((x) => x.username !== username).concat([rec]);
     }
     s.counts.dont_follow_me_back = s.dont_follow_me_back.length;
     s.counts.not_followed_back  = s.not_followed_back.length;
+    // ponytail: counts.disabled and counts.flagged are kept equal here — the
+    // server populates them identically in read_snapshot. A split would only
+    // make sense if a stale data/disabledaccounts.json entry didn't match a
+    // current DFMB row, which the next analyze pass reconciles anyway.
     s.counts.disabled           = s.disabled_accounts.length;
     s.counts.flagged            = s.disabled_accounts.length;
     render();
@@ -991,11 +723,13 @@ async function toggleFlag(btn, username, action) {
   }
 }
 
+// ponytail: single delegated handler at the document level so newly-rendered
+// rows don't need a fresh per-row listener. Guarded so load() can call it
+// again on a future refresh without double-wiring.
+let _flagButtonsWired = false;
 function wireFlagButtons() {
-  if (wired.flags) return;
-  wired.flags = true;
-  // ponytail: single delegated handler at document level so newly-rendered
-  // rows don't need a fresh per-row listener. Survives render() rebuilds.
+  if (_flagButtonsWired) return;
+  _flagButtonsWired = true;
   document.addEventListener("click", (e) => {
     const btn = e.target.closest("button.flag-btn, button.unflag-btn");
     if (!btn || !btn.dataset.username || btn.disabled) return;
@@ -1005,15 +739,36 @@ function wireFlagButtons() {
   });
 }
 
-// ponytail: wireSearch/wireFlagButtons/wireImport must each only register
-// handlers ONCE — load() is called recursively from wireImport on successful
-// upload, so omitting these guards causes duplicated listeners (two renders
-// per keystroke and double alerts on flag failures).
-const wired = { search: false, flags: false, upload: false };
+// ponytail: idempotent — `load()` is called once on init, but if a future
+// caller invokes it again, this guard keeps the disclosure toggle's click
+// state from drifting (double-fire → cancel-out bugs are the classic symptom).
+let _disclosureWired = false;
+function wireDisclosure() {
+  if (_disclosureWired) return;
+  _disclosureWired = true;
+  const toggle = $("disabled-toggle");
+  const section = $("disabled-section");
+  if (!toggle || !section) return;
+  toggle.addEventListener("click", () => {
+    const nextCollapsed = section.dataset.collapsed !== "true";
+    section.dataset.collapsed = nextCollapsed ? "true" : "false";
+    toggle.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+    toggle.setAttribute("aria-label", nextCollapsed ? "Show flagged accounts" : "Hide flagged accounts");
+  });
+}
+
+function render() {
+  const s = latestSnapshot();
+  if (!s) return;
+  $("generated").textContent = fmtAgo(state.data.generated_at);
+  renderHeader(s);
+  renderStats(s);
+  renderPanel("nfb-list",  "nfb-count",  s.not_followed_back,   s.not_followed_back.length,   "nfb",  { flagButton: true });
+  renderPanel("dfmb-list", "dfmb-count", s.dont_follow_me_back, s.dont_follow_me_back.length, "dfmb", { flagButton: true });
+  renderDisabledPanel(s);
+}
 
 function wireSearch() {
-  if (wired.search) return;
-  wired.search = true;
   const wire = (inputId, key) => {
     const el = $(inputId);
     el.addEventListener("input", (e) => {
@@ -1025,132 +780,9 @@ function wireSearch() {
       fresh.setSelectionRange(v.length, v.length);
     });
   };
-  wire("nfb-search",  "nfb");
-  wire("dfmb-search", "dfmb");
-  wire("lost-search", "lost");
-  wire("nb-search",   "nb");
-  wire("disabled-search", "disabled");
-}
-
-function wireImport() {
-  if (wired.upload) return;
-  wired.upload = true;
-  const date = $("imp-date");
-  const followers = $("imp-followers");
-  const following = $("imp-following");
-  const submit = $("imp-submit");
-  const status = $("imp-status");
-  const countChip = $("imp-count");
-  const DATE_RE = /^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])-\d{4}$/;
-
-  const setStatus = (text, kind) => {
-    status.textContent = text;
-    status.className = "imp-status " + (kind || "");
-  };
-
-  // ponytail: auto-format MM-DD-YYYY on every keystroke. The user types digits
-  // only — we insert dashes after the 2-digit month and the 2-digit day, so
-  // "07" becomes "07-", "0715" becomes "07-15-", and "07152026" becomes
-  // "07-15-2026". Pastes that already match MM-DD-YYYY pass through untouched.
-  date.addEventListener("input", () => {
-    const was = date.value;
-    if (DATE_RE.test(was)) return;
-
-    const oldStart = date.selectionStart ?? was.length;
-    const digitsBefore = was.slice(0, oldStart).replace(/\D/g, "").length;
-    const digits = was.replace(/\D/g, "").slice(0, 8);
-    let v = "";
-    for (let i = 0; i < digits.length; i++) {
-      if (i === 2 || i === 4) v += "-";
-      v += digits[i];
-    }
-
-    // Land the cursor past `digitsBefore` digits in v, then step over any
-    // newly-inserted trailing dash so the user's next keystroke lands cleanly.
-    let newCursor = 0, seen = 0;
-    for (const ch of v) {
-      if (seen >= digitsBefore) break;
-      newCursor++;
-      if (/\d/.test(ch)) seen++;
-    }
-    while (newCursor < v.length && /\D/.test(v[newCursor])) newCursor++;
-
-    if (v !== was) date.value = v;
-    date.setSelectionRange(newCursor, newCursor);
-
-    if (v.length >= 10 && !DATE_RE.test(v)) {
-      setStatus("Date must be in MM-DD-YYYY format (e.g. 07-15-2026).", "error");
-    } else if (status.classList.contains("error") && status.textContent.startsWith("Date must")) {
-      setStatus("", "");
-    }
-  });
-
-  submit.addEventListener("click", async () => {
-    const d = date.value.trim();
-    if (!d) {
-      setStatus("Please enter the date in MM-DD-YYYY format (e.g. 07-15-2026).", "error");
-      date.focus();
-      return;
-    }
-    // ponytail: refuse early — server is strict MM-DD-YYYY, so a 50MB upload would just 400.
-    if (!DATE_RE.test(d)) {
-      setStatus("Date must be in MM-DD-YYYY format (e.g. 07-15-2026).", "error");
-      date.focus();
-      return;
-    }
-    const f = followers.files && followers.files[0];
-    const g = following.files && following.files[0];
-    if (!f || !g) {
-      setStatus("Please pick both the followers and following JSON files.", "error");
-      return;
-    }
-    submit.disabled = true;
-    setStatus(`Adding snapshot for ${d}…`, "loading");
-    let importedDate = d;
-    let importedF = 0, importedG = 0;
-    try {
-      const fd = new FormData();
-      fd.set("date", d);
-      fd.set("followers", f, f.name);
-      fd.set("following", g, g.name);
-      const r = await fetch("/import", {
-        method: "POST", body: fd,
-        headers: { "Connection": "close" },
-      });
-      // ponytail: server returns {ok:false, error:"..."} JSON on validation
-      // failure so the alert text stays clean instead of leaking HTML markup.
-      const t = await r.text();
-      let data;
-      try { data = JSON.parse(t); } catch { data = { ok: r.ok }; }
-      if (!r.ok || !data.ok) {
-        const msg = (data && data.error) || t || `HTTP ${r.status}`;
-        throw new Error(msg);
-      }
-      importedDate = data.date;
-      importedF = data.followers;
-      importedG = data.following;
-      setStatus(`Added ${importedF.toLocaleString()} followers + ${importedG.toLocaleString()} followings for ${importedDate}. Refreshing…`, "ok");
-      await load();
-      setStatus(`Added ${importedF.toLocaleString()} followers + ${importedG.toLocaleString()} followings for ${importedDate}.`, "ok");
-      if (countChip) {
-        countChip.textContent = `${importedDate}: +${importedF.toLocaleString()} followers`;
-        countChip.hidden = false;
-      }
-      followers.value = "";
-      following.value = "";
-      date.value = "";
-    } catch (e) {
-      setStatus(`Failed: ${e.message || e}`, "error");
-      // ponytail: clear any stale chip from a prior successful upload so the
-      // section header doesn't lie about the latest count after a failure.
-      if (countChip) {
-        countChip.textContent = "";
-        countChip.hidden = true;
-      }
-    } finally {
-      submit.disabled = false;
-    }
-  });
+  wire("nfb-search",       "nfb");
+  wire("dfmb-search",      "dfmb");
+  wire("disabled-search",  "disabled");
 }
 
 // ponytail: cache-bust via Date.now() on the report URL so re-running python run.py reflects on refresh.
@@ -1158,11 +790,9 @@ async function load() {
   const r = await fetch("/dist/report.json?v=" + Date.now(), { cache: "no-store" });
   if (!r.ok) throw new Error("failed to load report.json");
   state.data = await r.json();
-  state.snapshotIdx = state.data.snapshots.length - 1;
-  state.weekIdx = state.data.weeks.length - 1;
   wireSearch();
   wireFlagButtons();
-  wireImport();
+  wireDisclosure();
   render();
 }
 
@@ -1170,7 +800,7 @@ load().catch((e) => {
   document.body.innerHTML = `<div class="wrap"><div class="empty-state">
     <strong>Could not load report.</strong><br><br>
     Make sure you ran <code>python run.py</code> first
-    (or <code>serve.bat</code> on Windows) so <code>dist/report.json</code> exists.
+    so <code>dist/report.json</code> exists.
     <br><br><em>${e.message}</em>
   </div></div>`;
 });

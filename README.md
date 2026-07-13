@@ -1,6 +1,6 @@
 # Instagram Follower Report
 
-A local-first tool that reads your Instagram data export and shows you who's unfollowed you, who you don't follow back, who you share mutual follows with, and how your follower count moves week-over-week. Runs entirely on your machine; nothing is uploaded.
+A local-first tool that reads your Instagram data export and shows you who's unfollowed you, who you don't follow back, who you share mutual follows with. Runs entirely on your machine; nothing is uploaded.
 
 Built for the curious Instagram user who wants a more useful view of their follower list than the app gives.
 
@@ -34,36 +34,31 @@ There is nothing to install. The pipeline is Python's standard library only.
 
    A browser window opens to `http://localhost:8000` showing your report. Hit `Ctrl+C` to stop.
 
-5. **(Optional, a week or so later)** Re-download the export and stage a second snapshot:
+5. **(Optional, a week or so later)** Re-download the export and stage another snapshot:
 
    ```
    python run.py import <path-to-unzipped-folder> --date MM-DD-YYYY
    python run.py
    ```
 
-   Two snapshots unlock the week-over-week section: unfollowers, new followers, accounts who unfollowed me without ever following back.
-
-## Browser upload (no terminal required after the first run)
-
-Once `python run.py` is up, scroll to the bottom of the page to **Add a new snapshot**. Drag in the same two JSON files, type the date in `MM-DD-YYYY`, click the button. The page refreshes in place. Same flow as the CLI `import` subcommand, just GUI.
-
-The form supports files up to 50 MB, which covers Instagram exports of up to ~50,000 followers.
+   The report always shows the latest snapshot.
 
 ## Flagging suspicious accounts
 
-Click **Flag** next to any handle that looks like a bot or a deactivated account. That handle moves into the "Likely disabled / deactivated" panel (dark section) and is excluded from your active lists going forward. Click **Unflag** on the dark panel to restore it.
+Hover any row in **People I don't follow back** or **People who don't follow me back** and click **Flag**. The handle moves into the "Likely disabled / deactivated" panel (dark section at the bottom) and is excluded from your active lists going forward. Click **Unflag** on the dark panel to restore it. The disclosure chevron above the disabled panel auto-opens so you can see the move take effect immediately.
 
-Flagged handles are stored in `data/disabledaccounts.json` (one flat JSON list of usernames) and persist across runs.
+Flagged handles are stored in `data/disabledaccounts.json` (one flat JSON list of lowercased usernames, e.g. `["dead_account", "spammer_xyz"]`) and persist across runs. Edit this file directly if you'd rather skip the UI.
 
 ## Network-side disabled-account detection
 
 ```
+
 python run.py --check-disabled
 ```
 
-For each handle in your "Don't follow me back" list, this walks `instagram.com/<handle>` anonymously and merges handles whose profile page reads as deleted, deactivated, or 404 into the flagged panel. Adds roughly 0.5 seconds per handle, so don't run it on ten thousand. Requires internet.
+For each handle in your "Don't follow me back" list, this walks `instagram.com/<handle>` anonymously and merges handles whose profile page reads as deleted, deactivated, or 404 into `data/disabledaccounts.json`. Adds roughly 0.5 seconds per handle, so don't run it on ten thousand. Requires internet.
 
-If you skip `--check-disabled`, only manually-flagged handles appear in the dark panel.
+If you skip `--check-disabled`, only the handles you manually maintain in `data/disabledaccounts.json` appear in the disabled panel.
 
 ## What the report shows
 
@@ -76,13 +71,11 @@ If you skip `--check-disabled`, only manually-flagged handles appear in the dark
 
 **Two panels below the cards:**
 
-- **People I don't follow back** — full list, with timestamps and a flag button each.
-- **People who don't follow me back** — same, plus flag.
-- **Likely disabled / deactivated** — only shows up when there's something to show. Click a row to unflag.
+- **People I don't follow back** — full list of followers you haven't reciprocated.
+- **People who don't follow me back** — accounts you follow that don't reciprocate.
+- **Likely disabled / deactivated** — only shows up when there's something to show. Read-only list sourced from `data/disabledaccounts.json` and `--check-disabled`.
 
-**Tabs** along the top switch between snapshots if you have multiple. The latest one is selected by default.
-
-**With two or more snapshots loaded, a soft-orange "Week over week" section appears** at the bottom of the page with four count cards (new/lost followers + new/lost followings) and two filled lists — "Unfollowers" (ever-followed-back) and "Unfollowed me — I never followed back".
+The report always shows the latest snapshot — read-only. Older snapshots live on disk in `data/` for analytical use but aren't surfaced in the UI.
 
 ## Where the data lives
 
@@ -99,7 +92,7 @@ dist/
   report.json            <- the generated report, rebuilt on every analyze
 ```
 
-Two or more snapshot folders in `data/` are required for the week-over-week section. To delete a snapshot, `rm -rf data/<MM-DD-YYYY>/` and re-run `python run.py`.
+The latest snapshot folder in `data/` drives the report. Older snapshots are kept on disk and surfaced in `dist/report.json` as week-over-week folds for analytical use, but the read-only UI shows only the most recent one. To delete a snapshot, `rm -rf data/<MM-DD-YYYY>/` and re-run `python run.py`.
 
 Both `data/` and `dist/` are git-ignored. They live only on your machine.
 
@@ -121,7 +114,7 @@ python run.py --help                # prints the full usage
 python run.py import <src> --date X # stage a new snapshot; no serve
 ```
 
-`import` requires `MM-DD-YYYY` for the `--date` argument (the browser form is also strict `MM-DD-YYYY` to keep folder names predictable).
+`import` requires `MM-DD-YYYY` for the `--date` argument to keep snapshot folder names predictable.
 
 ## Help! Something went wrong
 
@@ -134,23 +127,22 @@ A folder in `data/` has a name that isn't a date. Rename it to `MM-DD-YYYY` or r
 **Follower count drops to zero in the report**  
 Check that you unzipped the right Instagram folder. `followers_1.json` should be at the top level of the source. If you have multiple unzipped folders (one for connected Facebook, etc.), pick the one whose root directly contains the JSON files.
 
-**Browser form gives `date must be in MM-DD-YYYY format`**  
-The server is strict (the form is strict, the server enforces). Use 2-digit month and day with a 4-digit year, like `07-15-2026`. `2026-07-15` is rejected on the browser path; use it via `python run.py import ... --date 2026-07-15` if you prefer ISO.
+**`python run.py import --date` says `date must be in MM-DD-YYYY format`**  
+The CLI subcommand is strict MM-DD-YYYY so folder names stay predictable. Use 2-digit month and day with a 4-digit year, like `07-15-2026`.
 
-**The flag button doesn't seem to do anything**  
-Look for the dark "Likely disabled / deactivated" panel near the bottom of the page. If the flagged handle doesn't appear there, you may have hit an old load() — refresh the browser tab and try again.
+**The disabled panel doesn't show what I expect**  
+It's hidden by default — click the red chevron above the panel to drop down the flagged accounts. If your disabled list is empty, the panel is hidden entirely. To bulk-edit without clicking each row, edit `data/disabledaccounts.json` (a flat JSON list of lowercase usernames) and re-run `python run.py`.
 
 ## FAQ
 
 **My export is large. Will it choke?**  
-The browser upload accepts files up to 50 MB. Instagram exports of even 50,000 followers usually fit. If you hit a cap, run the CLI directly: `python run.py import <src> --date X` reads from disk and skips the upload limit.
+`python run.py import <src> --date X` reads from disk and is bounded by available RAM. Instagram exports of even 50,000 followers usually fit comfortably.
 
 **Can I host this so my friends see it?**  
-For the read-only view: yes — push to GitHub, build the static `dist/report.json` weekly with a CI job, deploy to GitHub Pages.  
-For the live `/import` upload + the live `/flag` toggle: you need a Python host. Render, Fly.io, and Railway all support `python run.py` on their free tiers.
+Yes — the page is fully read-only and `dist/report.json` is a plain static file. Push to GitHub, regenerate `dist/report.json` weekly via a CI job (`python run.py` after staging snapshots), and deploy to GitHub Pages. The server itself no longer has any endpoints that accept writes, so a static host works.
 
 **I deleted `data/`. Will my flagged handles come back?**  
-They were stored in `data/disabledaccounts.json`. If you delete the folder, you delete the flags. Re-flag any handles you care about through the row buttons — they re-persist immediately.
+They were stored in `data/disabledaccounts.json`. If you delete the folder, you delete the flags. Restore them by recreating `data/disabledaccounts.json` (a flat JSON list of usernames) and re-flagging any handles you care about via the row buttons — they re-persist immediately on the next click.
 
 **Why is "Don't follow me back" bigger than "I don't follow back"?**  
 Most people use Instagram to follow others without expecting a follow-back. The two lists aren't symmetric: the first shows accounts I follow that don't reciprocate (g − f at this snapshot). The second shows accounts who follow me that I haven't followed back (f − g).

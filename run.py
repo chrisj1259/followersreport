@@ -26,10 +26,15 @@ Each JSON is the conventional Instagram export shape:
 username is taken from string_list_data[0].value (lowercased); timestamp from
 string_list_data[0].timestamp (unix seconds, preserved).
 
-Flag an account as deleted/disabled by clicking the "Flag" button on a row.
-Flagged handles are persisted to `data/disabledaccounts.json` (a flat JSON
-list) and excluded from the main panels on every subsequent run. Same file
-also receives handles sniffed by `--check-disabled` (slow, network).
+Disabled-account state is loaded from `data/disabledaccounts.json` (a flat
+JSON list of usernames) on every analyze. Handles in this list are pulled out
+of the "Don't follow me back" panel and surfaced under "Likely disabled /
+deactivated". The UI exposes Flag buttons on rows in the NFB / DFMB panels
+(POST /flag) and an Unflag button on each row in the disabled panel — keep or
+remove handles from the flagged list via clicking instead of editing the JSON
+file by hand. `python run.py --check-disabled` additionally walks each DFMB
+handle anonymously and merges likely-deactivated Instagram pages into the
+same file.
 
 A positional port argument overrides the default 8000.
 
@@ -40,11 +45,8 @@ ponytail: bind the http server to localhost only — never expose the report.
 from __future__ import annotations
 
 import argparse
-import cgi
-import contextlib
 import functools
 import http.server
-import io
 import json
 import os
 import re
@@ -52,7 +54,6 @@ import shutil
 import socket
 import sys
 import tempfile
-import threading
 import time
 import urllib.request
 import webbrowser
@@ -65,11 +66,6 @@ DATA = ROOT / "data"
 OUT = ROOT / "dist" / "report.json"
 DISABLED_FILE = DATA / "disabledaccounts.json"
 DEFAULT_PORT = 8000
-
-# ponytail: serialise the in-process /import -> run_analyze rebuild so two
-# concurrent uploads can't clobber dist/report.json on the same write. Single-
-# user localhost tool, but two clicks in quick succession is plausible.
-IMPORT_LOCK = threading.Lock()
 
 # ponytail: disabled-account sniff is heuristic — Instagram can change their
 # markup tomorrow. We never silently drop handles on network failure; an
@@ -92,20 +88,16 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
 
 def _read_flagged() -> set[str]:
     """Read data/disabledaccounts.json (flat list of usernames) and return a
-    lowercased set. Tolerates {"handles": [...]} wrapper for future schema
-    evolution. Missing file -> empty set (no flags)."""
+    lowercased set. Missing file -> empty set (no flags)."""
     if not DISABLED_FILE.exists():
         return set()
     try:
         raw = json.loads(DISABLED_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return set()
-    if isinstance(raw, list):
-        return {str(u).strip().lower() for u in raw if u}
-    if isinstance(raw, dict):
-        handles = raw.get("handles") or []
-        return {str(u).strip().lower() for u in handles if u}
-    return set()
+    if not isinstance(raw, list):
+        return set()
+    return {str(u).strip().lower() for u in raw if u}
 
 
 def _write_flagged(handles: set[str]) -> None:
@@ -176,7 +168,7 @@ def looks_disabled(username: str, timeout: float = 8.0) -> bool | None:
 def filter_disabled_accounts_by_network(snapshot: dict, *, delay: float = 0.25) -> None:
     """For each handle in 'dont_follow_me_back', fetch their Instagram page
     and merge detected-disabled entries into 'disabled_accounts'. Heuristic
-    only; never silently drops handles on network failure (unklar verdicts 
+    only; never silently drops handles on network failure (unklar verdicts
     stay in the active list)."""
     label = snapshot["date_folder"]
     items = snapshot["dont_follow_me_back"]
@@ -339,14 +331,9 @@ def read_snapshot(folder: Path, flagged: set[str]) -> tuple[dict, list[dict], li
 
     All accounts in `flagged` (data/disabledaccounts.json) are pulled out of
     every display bucket and surfaced in 'disabled_accounts' instead. Raw
-    follower/following lists are returned alongside the summary so week-over-week
-    diffs don't get distorted by manual flagging.
+    follower/following lists are returned alongside the summary.
     """
     buckets: dict[str, list[dict]] = {"followers": [], "following": []}
-    # ponytail: 'raw' tracks UNFILTERED records so week-over-week fold_pair sees
-    # actual full-account membership; 'buckets' is what gets filtered against
-    # data/disabledaccounts.json for the on-page display.
-    raw:      dict[str, list[dict]] = {"followers": [], "following": []}
     for f in sorted(folder.glob("*.json")):
         n = f.name.lower()
         recs = load_json_records(f)
@@ -354,10 +341,8 @@ def read_snapshot(folder: Path, flagged: set[str]) -> tuple[dict, list[dict], li
             continue
         if "follower" in n or "folower" in n:
             buckets["followers"].extend(recs)
-            raw["followers"].extend(recs)
         elif "following" in n:
             buckets["following"].extend(recs)
-            raw["following"].extend(recs)
         # ponytail: unrecognized exports are silently ignored — better than
         # raising on Instagram's ever-growing export surface.
 
@@ -397,16 +382,18 @@ def read_snapshot(folder: Path, flagged: set[str]) -> tuple[dict, list[dict], li
         "mutuals":             [by_u_f[u] for u in (fset & gset)],
         "disabled_accounts":   by_ts_desc(flagged_records),
     }
-    # ponytail: return raw (unfiltered) follower + following lists so week-over-week
-    # diffs see actual full-account membership regardless of the manual flag file.
-    return summary, raw["followers"], raw["following"]
+    # ponytail: return raw (unfiltered) follower + following lists so analytics
+    # consumers see actual full-account membership regardless of the manual
+    # flag file. (Local-only consumers today — no UI uses this; cheap to keep.)
+    return summary, buckets["followers"], buckets["following"]
 
 
 def fold_pair(prev: tuple[str, list[dict], list[dict]],
               curr: tuple[str, list[dict], list[dict]]) -> dict:
-    """Diff a chronological pair of raw (unfiltered) snapshots into a
-    week-over-week block. Operates on raw follower/following lists so manual
-    flagging doesn't distort lost/added counts.
+    """Diff a chronological pair of raw snapshots into a week-over-week block.
+    Operates on raw follower/following lists so manual flagging doesn't distort
+    lost/added counts. Available in report.json for users who want to inspect
+    the JSON directly; not rendered in the read-only UI.
 
     prev/curr shape: (folder_name, raw_followers, raw_following).
     """
@@ -422,13 +409,12 @@ def fold_pair(prev: tuple[str, list[dict], list[dict]],
     lost_g   = gset_p - gset_c   # accounts I dropped or who blocked me
     new_g    = gset_c - gset_p   # accounts I newly followed
 
-    # ponytail: 'lost_never_followed_back' is the previous 'Dont follow me back'
-    # bucket minus the current 'Dont follow me back' bucket — these are people
-    # who never followed me back AND are no longer in my followings, i.e. they
-    # unfollowed me without ever reciprocating.
-    dfmb_prev = gset_p - fset_p
-    dfmb_curr = gset_c - fset_c
-    lost_never_followed_back = dfmb_prev - dfmb_curr
+    # ponytail: 'lost_never_followed_back' should really be "I unfollowed them
+    # and they never followed me back". It is NOT "they unfollowed me".
+    # Compute it as: people I was following at the previous snapshot, am no
+    # longer following now, and were not following me in either snapshot.
+    # This also excludes anyone who followed me back between snapshots.
+    lost_never_followed_back = (gset_p - gset_c) - fset_p - fset_c
 
     return {
         "prev_folder": p_name,
@@ -447,29 +433,23 @@ def fold_pair(prev: tuple[str, list[dict], list[dict]],
     }
 
 
-# ---------- http server with /flag endpoint ----------
+# ---------- http server (static files only) ----------
 
 
 class FlagHandler(http.server.SimpleHTTPRequestHandler):
-    """Like SimpleHTTPRequestHandler but accepts POST /flag and POST /import.
+    """Like SimpleHTTPRequestHandler but accepts POST /flag.
 
     /flag   — toggle a username in data/disabledaccounts.json (small JSON body).
-    /import — multipart upload of a followers + following JSON pair; staged into
-              data/<date>/ and dist/report.json is rebuilt in the same request.
 
     Static file serving still works for / and /dist/* because do_GET / do_HEAD
-    fall through to super().
+    fall through to super(). Silent default access log keeps the server
+    terminal quiet while the user pokes at the UI.
+
+    ponytail: bind to localhost only — refusing to expose the report on the LAN.
     """
-
-    # ponytail: 50 MB cap on /import uploads — Instagram data exports run large
-    # but anything bigger is almost certainly the wrong file.
-    IMPORT_MAX_BYTES = 50 * 1024 * 1024
-
     def do_POST(self) -> None:  # type: ignore[override]
         if self.path == "/flag":
             self._handle_flag()
-        elif self.path == "/import":
-            self._handle_import()
         else:
             self.send_error(404, "no such endpoint")
 
@@ -505,114 +485,15 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         self._send_json(200, {"ok": True, "username": username.lower(),
                               "action": action, "total": len(new_list)})
 
-    def _handle_import(self) -> None:
-        # ponytail: cap the multipart-parsed size at the same 50 MB ceiling as
-        # the Content-Length check, so a malformed body that over-promises can't
-        # blow up by reading unbounded bytes into cgi.FieldStorage's buffers.
-        # Set in-handler so we don't poison the global cgi.maxlen for any other
-        # code that happens to import this module.
-        cgi.maxlen = self.IMPORT_MAX_BYTES
-
-        length = int(self.headers.get("Content-Length") or "0")
-        if length <= 0 or length > self.IMPORT_MAX_BYTES:
-            self._send_json(400, {"ok": False, "error":
-                f"empty or oversized body (max {self.IMPORT_MAX_BYTES // (1024*1024)} MB)"})
-            return
-        ctype = self.headers.get("Content-Type", "")
-        if not ctype.startswith("multipart/form-data"):
-            self._send_json(400, {"ok": False, "error": "expected multipart/form-data"})
-            return
-        # ponytail: cgi.FieldStorage is the stdlib multipart parser. Deprecated
-        # in 3.13 but still works, and avoids re-implementing RFC 7578 by hand.
-        try:
-            fs = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
-                                  environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": ctype})
-        except ValueError as e:
-            self._send_json(400, {"ok": False, "error": f"malformed multipart body: {e}"})
-            return
-
-        date_raw = (fs.getfirst("date") or "").strip()
-        # ponytail: the entire codebase is strict MM-DD-YYYY — CLI, browser,
-        # and folder naming. The regex check here keeps the browser form in
-        # lockstep with the canonical format so we never have a '2026-08-15'
-        # input turn into an '08-15-2026' folder under the user's feet.
-        if not re.fullmatch(r"\d{2}-\d{2}-\d{4}", date_raw):
-            self._send_json(400, {"ok": False,
-                "error": f"date must be in MM-DD-YYYY format (got {date_raw!r})"})
-            return
-        try:
-            date = parse_folder_date(date_raw)
-        except ValueError:
-            self._send_json(400, {"ok": False,
-                "error": f"date must be in MM-DD-YYYY format and be a real calendar date (got {date_raw!r})"})
-            return
-        date_str = date.strftime("%m-%d-%Y")
-
-        for name in ("followers", "following"):
-            field = fs[name] if name in fs else None
-            if field is None or not getattr(field, "file", None):
-                self._send_json(400, {"ok": False, "error":
-                    f"missing '{name}' file (FormData fieldname '{name}')"})
-                return
-            if not getattr(field, "filename", ""):
-                self._send_json(400, {"ok": False,
-                    "error": f"'{name}' has no filename — pick a file"})
-                return
-
-        # Buffer the two uploaded files into a temp dir so _stage_snapshot can
-        # substring-route them just like the CLI path. The chosen filenames keep
-        # their 'followers_1.json' / 'following.json' shape so the import pipeline
-        # doesn't need any new logic.
-        try:
-            with tempfile.TemporaryDirectory() as td:
-                tmp = Path(td)
-                for name in ("followers", "following"):
-                    field = fs[name]
-                    original = Path(field.filename).name
-                    # If the user picked a file whose real name doesn't contain
-                    # 'follower'/'following' (e.g. download.png), we still want
-                    # substring routing to work — rename so the routing key is in
-                    # the filename without trashing the user's original.
-                    suffix_name = "tmp_" + original
-                    (tmp / suffix_name).write_bytes(field.file.read())
-                try:
-                    n_f, n_g = _stage_snapshot(tmp, date_str)
-                except SystemExit as e:
-                    self._send_json(400, {"ok": False, "error": str(e)})
-                    return
-
-            # ponytail: rebuild report.json in-process so dist/report.json is
-            # fresh by the time the client re-fetches /dist/report.json. The
-            # IMPORT_LOCK keeps two simultaneous uploads from clobbering each
-            # other's write. Stdout/stderr are silenced so the server terminal
-            # stays quiet during background triggers.
-            with IMPORT_LOCK:
-                # ponytail: silence run_analyze's terminal output so the server
-                # terminal stays quiet while a browser user uploads a snapshot.
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    try:
-                        run_analyze(argparse.Namespace(
-                            port=DEFAULT_PORT, check_disabled=False, subcommand=None,
-                        ))
-                    except SystemExit as e:
-                        self._send_json(500, {"ok": False, "error": f"analyze failed: {e}"})
-                        return
-        except OSError as e:
-            self._send_json(500, {"ok": False, "error": f"io error: {e}"})
-            return
-
-        self._send_json(200, {"ok": True, "date": date_str,
-                              "followers": n_f, "following": n_g})
-
-    # ponytail: silence default access-log lines on stdout — they make the 
+    # ponytail: silence default access-log lines on stdout — they make the
     # terminal noisy while the user is interacting via the UI.
     def log_message(self, format: str, *args) -> None:  # type: ignore[override]
         pass
 
 
 def _run_server(port: int) -> http.server.HTTPServer:
-    """Bind FlagHandler to localhost:<port> and return a HTTPServer ready to
-    serve_forever(). Splits out browser-launch and main-loop from serve() so
+    """Bind the static handler to localhost:<port> and return a HTTPServer ready
+    to serve_forever(). Splits out browser-launch and main-loop from serve() so
     tests can drive the HTTP layer without spawning a browser window.
 
     ponytail: bind to localhost only — refusing to expose the report on the LAN.
@@ -645,8 +526,7 @@ def serve(port: int) -> None:
 
 def _stage_snapshot(src: Path, date_str: str) -> tuple[int, int]:
     """Source-of-truth for staging a new dated snapshot. Shared by the `import`
-    CLI subcommand and the browser POST /import endpoint so both paths validate
-    identically.
+    CLI subcommand so the on-disk format stays predictable.
 
     ponytail: substring-routes the source files exactly like read_snapshot does,
     so 'folowers_May2026.json' -> followers bucket, 'who_i_follow.json' ->
@@ -795,9 +675,9 @@ def run_analyze(args: argparse.Namespace) -> None:
         snapshots.append(summary)
         raw_pairs.append((folder.name, fs, gs))
 
-    # ponytail: fold raw (unfiltered) follower/following into week-over-week deltas.
-    # Manual flags don't distort the lost/added counts because we operate on the
-    # raw lists, not on the flag-filtered summary buckets.
+    # ponytail: keep week-over-week folds in report.json for JSON consumers;
+    # the read-only UI doesn't render them. Cheap and preserves the historical
+    # summary so power users can diff snapshots via the data file.
     weeks: list[dict] = []
     for i in range(len(raw_pairs) - 1):
         weeks.append(fold_pair(raw_pairs[i], raw_pairs[i + 1]))
@@ -829,6 +709,10 @@ def run_analyze(args: argparse.Namespace) -> None:
     print(f"  flagged (excluded):  {c['flagged']}")
     if c.get("disabled") and c["disabled"] > c["flagged"]:
         print(f"  network-disabled:    {c['disabled'] - c['flagged']}")
+    # ponytail: the UI is read-only and always picks the latest snapshot, so the
+    # total snapshot count is the only thing worth surfacing next to the latest.
+    if len(snapshots) > 1:
+        print(f"  (older {len(snapshots) - 1} snapshot(s) on disk, not displayed)")
     print(f"\nwrote {OUT.relative_to(ROOT)}")
 
 
