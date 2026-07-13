@@ -1,0 +1,1179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Instagram Follower Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700;800&display=swap">
+<style>
+  /* ponytail: design language lifted from designinspo/design.html — Inter Tight
+  font, pill-shaped chips, FA5D29 / 49B3FC / AAEEC4 / 502bd8 accent palette,
+  uppercase eyebrow labels with .1em tracking, soft pastel count badges, and
+  rounded 4 / 8 / 16px corners. Light editorial primary bg; a single dark
+  --bg-secondary section is used for the 'Likely disabled' panel so the flag
+  action visually stands apart from the active lists. */
+  :root {
+    /* font tokens — Inter Tight variable, weights matched to Awwwards */
+    --font-1: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Inter", sans-serif;
+    --font-normal: 400;
+    --font-medium: 500;
+    --font-bold: 600;
+
+    /* color tokens */
+    --color-primary: #222;
+    --color-link: #222;
+    --color-muted: #6a6a6a;
+    --color-muted-2: #444;
+    --color-white: #fff;
+    --color-orange: #FA5D29;
+    --color-blue: #49B3FC;
+    --color-inspire: #AAEEC4;
+    --color-awards: #502bd8;
+    --color-soft-orange: #f8f0ee;
+    --color-soft-blue: #e1f0fc;
+    --color-soft-purple: #ece6f8;
+
+    /* surface tokens */
+    --bg-primary: #F8F8F8;
+    --bg-secondary: #222;
+    --bg-card: #fff;
+    --bg-hover: #f1f1f1;
+    --border-gray: #ededed;
+    --border-normal: 1px;
+
+    /* radius tokens */
+    --rounded-small: 4px;
+    --rounded-normal: 8px;
+    --rounded-large: 1rem;
+
+    /* misc tokens */
+    --pill: 999px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: var(--font-1);
+    background: var(--bg-primary);
+    color: var(--color-primary);
+    line-height: 1.55;
+    font-weight: var(--font-normal);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 36px 28px 80px;
+  }
+
+  /* ---------- header ---------- */
+  header.top {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 24px;
+    flex-wrap: wrap;
+    padding-bottom: 22px;
+    border-bottom: var(--border-normal) solid var(--border-gray);
+    margin-bottom: 32px;
+  }
+  .brand .eyebrow {
+    display: inline-block;
+    font-size: 12px;
+    color: var(--color-orange);
+    font-weight: var(--font-medium);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 8px;
+  }
+  h1 {
+    font-size: clamp(28px, 2.6rem + 0.6vw, 48px);
+    font-weight: var(--font-bold);
+    line-height: 1.05;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  .meta .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border-radius: var(--pill);
+    background: var(--color-primary);
+    color: var(--color-white);
+    font-size: 12px;
+    font-weight: var(--font-medium);
+    letter-spacing: 0.02em;
+  }
+
+  /* ---------- tabs ---------- */
+  nav.tabs {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 28px;
+  }
+  .tab {
+    appearance: none;
+    border: var(--border-normal) solid var(--border-gray);
+    background: var(--bg-card);
+    color: var(--color-primary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: var(--font-medium);
+    letter-spacing: 0.02em;
+    padding: 10px 18px;
+    border-radius: var(--pill);
+    cursor: pointer;
+    transition: background 180ms ease, color 180ms ease, border-color 180ms ease, transform 180ms ease;
+  }
+  .tab:hover {
+    background: var(--color-primary);
+    color: var(--color-white);
+    border-color: var(--color-primary);
+    transform: translateY(-1px);
+  }
+  .tab.active {
+    background: var(--color-primary);
+    color: var(--color-white);
+    border-color: var(--color-primary);
+  }
+
+  /* ---------- stats ---------- */
+  .stats {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-bottom: 32px;
+  }
+  @media (max-width: 800px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  .stat {
+    background: var(--bg-card);
+    border: var(--border-normal) solid var(--border-gray);
+    border-radius: var(--rounded-large);
+    padding: 22px 22px 18px;
+    position: relative;
+    overflow: hidden;
+    transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+  }
+  .stat:hover {
+    transform: translateY(-2px);
+    border-color: #d8d8d8;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.06);
+  }
+  .stat::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0;
+    width: 4px; height: 100%;
+    background: var(--color-orange);
+  }
+  .stat.blue::before { background: var(--color-blue); }
+  .stat.green::before { background: var(--color-inspire); }
+  .stat.purple::before { background: var(--color-awards); }
+  .stat .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--color-muted);
+    font-weight: var(--font-medium);
+    margin-bottom: 4px;
+  }
+  .stat .num {
+    font-family: var(--font-1);
+    font-size: clamp(32px, 2.2rem + 0.6vw, 48px);
+    font-weight: var(--font-bold);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    margin-bottom: 6px;
+  }
+  .stat .sub {
+    color: var(--color-muted-2);
+    font-size: 12px;
+  }
+
+  /* ---------- shared panels ---------- */
+  .split {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: 1fr 1fr;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--bg-card);
+    border: var(--border-normal) solid var(--border-gray);
+    border-radius: var(--rounded-large);
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    min-height: 320px;
+    max-height: 580px;
+    transition: border-color 200ms ease;
+  }
+  .panel:hover { border-color: #d8d8d8; }
+  .panel h2 {
+    margin: 0 0 16px;
+    font-size: 13px;
+    font-weight: var(--font-bold);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-primary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .panel h2 .count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    padding: 2px 10px;
+    border-radius: var(--pill);
+    font-family: var(--font-1);
+    font-size: 11px;
+    font-weight: var(--font-bold);
+    background: var(--color-soft-orange);
+    color: var(--color-orange);
+  }
+  .panel.blue h2 .count { background: var(--color-soft-blue); color: var(--color-blue); }
+  .panel.purple h2 .count { background: var(--color-soft-purple); color: var(--color-awards); }
+  .search {
+    width: 100%;
+    appearance: none;
+    background: var(--bg-primary);
+    border: var(--border-normal) solid var(--border-gray);
+    color: var(--color-primary);
+    border-radius: var(--rounded-normal);
+    padding: 10px 14px;
+    font: inherit;
+    font-size: 13px;
+    margin-bottom: 12px;
+    transition: border-color 160ms ease, background 160ms ease;
+  }
+  .search:focus {
+    outline: none;
+    border-color: var(--color-orange);
+    background: var(--bg-card);
+  }
+  .search::placeholder { color: var(--color-muted); }
+
+  .list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    flex: 1;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-gray) transparent;
+  }
+  .list::-webkit-scrollbar { width: 6px; }
+  .list::-webkit-scrollbar-thumb { background: var(--border-gray); border-radius: 3px; }
+  .list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--rounded-normal);
+    font-size: 14px;
+    font-family: var(--font-1);
+    font-weight: var(--font-medium);
+    letter-spacing: -0.005em;
+    color: var(--color-primary);
+    transition: background 120ms ease;
+  }
+  .list li:hover { background: var(--bg-hover); }
+  .list li .u {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-decoration: none;
+    color: inherit;
+    flex: 1;
+    min-width: 0;
+  }
+  .list li a.u:hover { color: var(--color-orange); }
+  .list li a.u:focus-visible { outline: 2px solid var(--color-orange); outline-offset: 2px; border-radius: 4px; }
+  .list li .when { color: var(--color-muted); font-size: 12px; flex-shrink: 0; font-weight: var(--font-normal); }
+  .list .empty {
+    color: var(--color-muted);
+    text-align: center;
+    padding: 32px 0;
+    font-family: var(--font-1);
+    font-size: 13px;
+  }
+
+  /* ponytail: hover-revealed pill button — collapses to a soft chip on row hover */
+  .list li button.flag-btn, .list li button.unflag-btn {
+    appearance: none;
+    font: inherit;
+    font-size: 11px;
+    font-weight: var(--font-medium);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 12px;
+    border-radius: var(--pill);
+    cursor: pointer;
+    background: transparent;
+    opacity: 0;
+    transition: opacity 140ms ease, background 140ms ease, color 140ms ease, border-color 140ms ease;
+    flex-shrink: 0;
+  }
+  .list li button.flag-btn     { color: var(--color-orange); border: var(--border-normal) solid var(--border-gray); }
+  .list li button.unflag-btn   { color: var(--color-blue);   border: var(--border-normal) solid var(--border-gray); }
+  .list li:hover button.flag-btn,
+  .list li:focus-within button.flag-btn,
+  .list li button.flag-btn:focus-visible { opacity: 0.95; }
+  .list li:hover button.unflag-btn,
+  .list li:focus-within button.unflag-btn,
+  .list li button.unflag-btn:focus-visible { opacity: 0.95; }
+  .list li button.flag-btn:hover   { background: var(--color-orange); color: var(--color-white); border-color: var(--color-orange); }
+  .list li button.unflag-btn:hover { background: var(--color-blue);   color: var(--color-white); border-color: var(--color-blue); }
+  .list li button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ---------- weekly soft-orange section ---------- */
+  section.weekly {
+    background: var(--color-soft-orange);
+    border: var(--border-normal) solid var(--border-gray);
+    border-radius: var(--rounded-large);
+    padding: 24px;
+    margin-top: 24px;
+  }
+  section.weekly h2 {
+    margin: 0 0 18px;
+    font-size: 13px;
+    font-weight: var(--font-bold);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-primary);
+  }
+  .deltas {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(4, 1fr);
+    margin-bottom: 18px;
+  }
+  @media (max-width: 800px) { .deltas { grid-template-columns: repeat(2, 1fr); } }
+  .delta {
+    background: var(--bg-card);
+    border: var(--border-normal) solid var(--border-gray);
+    border-radius: var(--rounded-normal);
+    padding: 16px 18px;
+  }
+  .delta .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-muted);
+    font-weight: var(--font-medium);
+    margin-bottom: 6px;
+  }
+  .delta .num {
+    font-family: var(--font-1);
+    font-variant-numeric: tabular-nums;
+    font-weight: var(--font-bold);
+    font-size: 28px;
+    line-height: 1;
+  }
+  .delta.up   .num { color: var(--color-orange); }
+  .delta.down .num { color: var(--color-primary); }
+  .delta.muted .num { color: var(--color-muted); }
+
+  /* ---------- disabled / flagged dark section ---------- */
+  /* ponytail: force every descendant to render in the light palette so
+  inherited browser defaults (link blue on visited, dark 'color: inherit'
+  from .list li before overrides) can't paint black-on-black. */
+  section.disabled-section, section.disabled-section * {
+    color: var(--color-white);
+  }
+  section.disabled-section {
+    background: var(--bg-secondary);
+    border-radius: var(--rounded-large);
+    padding: 22px;
+    margin-bottom: 28px;
+  }
+  section.disabled-section h2 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    font-weight: var(--font-bold);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  section.disabled-section h2 .count {
+    display: inline-flex;
+    align-items: center;
+    min-width: 24px;
+    padding: 2px 10px;
+    border-radius: var(--pill);
+    background: var(--color-orange);
+    color: var(--color-white);
+    font-size: 11px;
+    font-weight: var(--font-bold);
+  }
+  section.disabled-section .explainer {
+    color: rgba(255,255,255,0.78);
+    font-size: 12px;
+    margin: 0 0 14px;
+    line-height: 1.6;
+  }
+  section.disabled-section .explainer code {
+    background: rgba(255,255,255,0.12);
+    padding: 1px 6px;
+    border-radius: var(--rounded-small);
+    font-family: var(--font-1);
+    font-weight: var(--font-medium);
+    font-size: 11px;
+    color: var(--color-white);
+  }
+  section.disabled-section .search {
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.22);
+    color: var(--color-white);
+  }
+  section.disabled-section .search::placeholder { color: rgba(255,255,255,0.5); }
+  section.disabled-section .search:focus { background: rgba(255,255,255,0.18); border-color: var(--color-orange); color: var(--color-white); }
+  section.disabled-section .list { color: var(--color-white); }
+  section.disabled-section .list li:hover { background: rgba(255,255,255,0.07); }
+  section.disabled-section .list li a.u:hover { color: var(--color-orange); }
+  section.disabled-section .list li .when { color: rgba(255,255,255,0.72); }
+  section.disabled-section .list .empty { color: rgba(255,255,255,0.55); }
+  section.disabled-section .list li button.unflag-btn {
+    color: var(--color-white);
+    border-color: rgba(255,255,255,0.32);
+  }
+  section.disabled-section .list li button.unflag-btn:hover {
+    background: var(--color-orange);
+    color: var(--color-white);
+    border-color: var(--color-orange);
+  }
+
+  /* ---------- add-snapshot form ---------- */
+  /* ponytail: light editorial card with an orange accent strip (matches the
+  'latest follower' stat). Reuses the existing pill/rounded tokens so the new
+  section feels native, not bolted on. */
+  section.add-snapshot {
+    background: var(--bg-card);
+    border: var(--border-normal) solid var(--border-gray);
+    border-radius: var(--rounded-large);
+    padding: 22px;
+    margin-top: 24px;
+    position: relative;
+    overflow: hidden;
+  }
+  section.add-snapshot::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0;
+    width: 4px; height: 100%;
+    background: var(--color-orange);
+  }
+  section.add-snapshot h2 {
+    margin: 0 0 6px;
+    font-size: 13px;
+    font-weight: var(--font-bold);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-primary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  section.add-snapshot h2 .count {
+    display: inline-flex;
+    align-items: center;
+    min-width: 24px;
+    padding: 2px 10px;
+    border-radius: var(--pill);
+    background: var(--color-soft-orange);
+    color: var(--color-orange);
+    font-size: 11px;
+    font-weight: var(--font-bold);
+  }
+  section.add-snapshot .explainer {
+    color: var(--color-muted-2);
+    font-size: 13px;
+    margin: 0 0 18px;
+    line-height: 1.6;
+  }
+  section.add-snapshot .explainer code {
+    background: var(--bg-primary);
+    padding: 1px 6px;
+    border-radius: var(--rounded-small);
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: var(--color-orange);
+  }
+  section.add-snapshot .row {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: 200px 1fr 1fr auto;
+    align-items: end;
+  }
+  @media (max-width: 800px) {
+    section.add-snapshot .row { grid-template-columns: 1fr; }
+  }
+  section.add-snapshot label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-muted);
+    font-weight: var(--font-medium);
+  }
+  section.add-snapshot input[type="text"],
+  section.add-snapshot input[type="file"] {
+    font: inherit;
+    appearance: none;
+    border: var(--border-normal) solid var(--border-gray);
+    border-radius: var(--rounded-normal);
+    padding: 10px 14px;
+    font-size: 13px;
+    background: var(--bg-primary);
+    color: var(--color-primary);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: var(--font-normal);
+    transition: border-color 160ms ease, background 160ms ease;
+  }
+  section.add-snapshot input[type="text"]:focus {
+    outline: none;
+    border-color: var(--color-orange);
+    background: var(--bg-card);
+  }
+  section.add-snapshot input[type="file"] {
+    padding: 8px 10px;
+    cursor: pointer;
+  }
+  section.add-snapshot input[type="file"]::file-selector-button {
+    appearance: none;
+    font: inherit;
+    font-size: 11px;
+    font-weight: var(--font-medium);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 6px 12px;
+    border-radius: var(--pill);
+    background: var(--bg-card);
+    color: var(--color-primary);
+    border: var(--border-normal) solid var(--border-gray);
+    margin-right: 10px;
+    cursor: pointer;
+  }
+  section.add-snapshot input[type="file"]::file-selector-button:hover {
+    background: var(--color-primary); color: var(--color-white); border-color: var(--color-primary);
+  }
+  section.add-snapshot button.submit {
+    appearance: none;
+    font: inherit;
+    font-size: 12px;
+    font-weight: var(--font-medium);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 11px 22px;
+    border-radius: var(--pill);
+    background: var(--color-primary);
+    color: var(--color-white);
+    cursor: pointer;
+    border: 0;
+    transition: background 160ms ease, transform 160ms ease;
+  }
+  section.add-snapshot button.submit:hover {
+    background: var(--color-orange);
+    transform: translateY(-1px);
+  }
+  section.add-snapshot button.submit:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  section.add-snapshot .imp-status {
+    margin-top: 14px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--color-muted-2);
+    min-height: 18px;
+  }
+  section.add-snapshot .imp-status.error  { color: var(--color-orange); font-weight: var(--font-medium); }
+  section.add-snapshot .imp-status.ok     { color: #2a9b65;                  font-weight: var(--font-medium); }
+  section.add-snapshot .imp-status.loading { color: var(--color-blue);        font-weight: var(--font-medium); }
+
+  /* ---------- empty state ---------- */
+  .empty-state {
+    background: var(--bg-card);
+    border: var(--border-normal) dashed var(--border-gray);
+    border-radius: var(--rounded-large);
+    padding: 24px;
+    text-align: center;
+    color: var(--color-muted);
+    margin-top: 24px;
+  }
+  .empty-state strong { color: var(--color-primary); font-weight: var(--font-bold); }
+  .empty-state code {
+    background: var(--bg-primary);
+    padding: 2px 8px;
+    border-radius: var(--rounded-small);
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: var(--color-orange);
+  }
+
+  footer {
+    margin-top: 40px;
+    color: var(--color-muted);
+    font-size: 12px;
+    text-align: center;
+    line-height: 1.7;
+  }
+  footer code {
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    color: var(--color-primary);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      <div class="eyebrow">Instagram · Follower report</div>
+      <h1>Last 7 days on Instagram</h1>
+    </div>
+    <div class="meta">
+      <span class="pill" id="generated">Loading…</span>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs"></nav>
+
+  <section id="single-only-empty" class="empty-state" hidden>
+    <strong>Only one snapshot so far.</strong>
+    Use the upload form below, or drop another week into
+    <code>data/&lt;MM-DD-YYYY&gt;/</code> and re-run <code>python run.py</code>,
+    to see week-over-week unfollowers.
+  </section>
+
+  <section class="stats" id="stats"></section>
+
+  <section class="split">
+    <article class="panel blue">
+      <h2>People I don't follow back <span class="count" id="nfb-count">0</span></h2>
+      <input class="search" id="nfb-search" placeholder="Filter usernames…" autocomplete="off">
+      <ul class="list" id="nfb-list"></ul>
+    </article>
+    <article class="panel">
+      <h2>People who don't follow me back <span class="count" id="dfmb-count">0</span></h2>
+      <input class="search" id="dfmb-search" placeholder="Filter usernames…" autocomplete="off">
+      <ul class="list" id="dfmb-list"></ul>
+    </article>
+  </section>
+
+  <section id="disabled-section" class="disabled-section" hidden>
+    <h2>
+      Likely disabled / deactivated
+      <span class="count" id="disabled-count">0</span>
+    </h2>
+    <p class="explainer">
+      Excluded from <em>Don't follow me back</em> because
+      <code>python run.py --check-disabled</code> couldn't load their profile, or you
+      flagged them via the row buttons (persisted to <code>data/disabledaccounts.json</code>).
+      Click an account to unflag and restore it.
+    </p>
+    <input class="search" id="disabled-search" placeholder="Filter usernames…" autocomplete="off">
+    <ul class="list" id="disabled-list"></ul>
+  </section>
+
+  <section class="weekly" id="weekly" hidden>
+    <h2 id="weekly-title">Week over week</h2>
+    <div class="deltas" id="deltas"></div>
+    <div class="split">
+      <article class="panel">
+        <h2>Unfollowers <span class="count" id="lost-count">0</span></h2>
+        <input class="search" id="lost-search" placeholder="Filter usernames…" autocomplete="off">
+        <ul class="list" id="lost-list"></ul>
+      </article>
+      <article class="panel purple">
+        <h2>Unfollowed me — I never followed back <span class="count" id="nb-count">0</span></h2>
+        <input class="search" id="nb-search" placeholder="Filter usernames…" autocomplete="off">
+        <ul class="list" id="nb-list"></ul>
+      </article>
+    </div>
+  </section>
+
+  <section class="add-snapshot">
+    <h2>
+      Add a new snapshot
+      <span class="count" id="imp-count" hidden></span>
+    </h2>
+    <p class="explainer">
+      Pick your <code>followers_1.json</code> and <code>following.json</code> files
+      from the Instagram data export and tell us the date the data was pulled.
+      Date format must be <code>MM-DD-YYYY</code> (e.g. <code>07-15-2026</code>).
+      Adding a snapshot refreshes the week-over-week numbers instantly.
+    </p>
+    <div class="row">
+      <label>Date
+        <input type="text" id="imp-date" placeholder="07-15-2026" autocomplete="off" maxlength="10">
+      </label>
+      <label>followers_1.json
+        <input type="file" id="imp-followers" accept=".json,application/json">
+      </label>
+      <label>following.json
+        <input type="file" id="imp-following" accept=".json,application/json">
+      </label>
+      <button class="submit" id="imp-submit" type="button">Add snapshot</button>
+    </div>
+    <div id="imp-status" class="imp-status"></div>
+  </section>
+
+  <footer>
+    Run <code>python run.py</code> (add <code>--check-disabled</code> to live-filter
+    disabled accounts) to refresh. On Windows, <code>serve.bat [--check-disabled]</code>
+    serves + opens the browser. Pass a port with <code>python run.py 9000</code>.
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  data: null,
+  snapshotIdx: 0,
+  weekIdx: -1,  // -1 = no week pair terminates at the currently selected snapshot
+  filters: { nfb: "", dfmb: "", lost: "", nb: "", disabled: "" },
+};
+
+function fmtDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso + "T00:00:00");
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function fmtAgo(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const ms = Date.now() - d.getTime();
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `updated ${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `updated ${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `updated ${h}h ago`;
+  return `updated on ${d.toLocaleDateString()}`;
+}
+
+function fmtWhen(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  const now = Date.now();
+  const days = Math.floor((now - d.getTime()) / 86400000);
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days}d ago`;
+  if (days < 365) return `${Math.floor(days/30)}mo ago`;
+  return `${Math.floor(days/365)}y ago`;
+}
+
+function row({ username, ts }, { flagButton = false } = {}) {
+  const li = document.createElement("li");
+  const u = document.createElement("a");
+  u.className = "u";
+  u.href = "https://instagram.com/" + username;
+  u.target = "_blank";
+  u.rel = "noopener noreferrer";
+  u.textContent = "@" + username;
+  const t = document.createElement("span");
+  t.className = "when"; t.textContent = fmtWhen(ts);
+  li.appendChild(u); li.appendChild(t);
+  if (flagButton) {
+    const isRemove = flagButton === "remove";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = isRemove ? "unflag-btn" : "flag-btn";
+    btn.textContent = isRemove ? "Unflag" : "Flag";
+    btn.dataset.username = username;
+    btn.title = isRemove
+      ? "Restore this account (no longer treat as disabled)"
+      : "Mark this account as deleted or disabled (moves to the flagged panel)";
+    li.appendChild(btn);
+  }
+  li.title = "Open @" + username + " on Instagram";
+  return li;
+}
+
+function filterRows(records, q) {
+  q = (q || "").trim().toLowerCase();
+  if (!q) return records;
+  return records.filter(r => r.username.includes(q));
+}
+
+function renderTabs() {
+  const tabs = $("tabs");
+  tabs.innerHTML = "";
+  state.data.snapshots.forEach((s, i) => {
+    const b = document.createElement("button");
+    b.className = "tab" + (i === state.snapshotIdx ? " active" : "");
+    b.textContent = fmtDate(s.date_iso);
+    b.addEventListener("click", () => {
+      state.snapshotIdx = i;
+      // ponytail: a week pair's curr_folder must equal the selected snapshot;
+      // older snapshots have no terminating week — renderWeekly hides the block.
+      state.weekIdx = state.data.weeks.findIndex(w => w.curr_folder === s.date_folder);
+      render();
+    });
+    tabs.appendChild(b);
+  });
+}
+
+function renderStats(s) {
+  const stats = $("stats");
+  const c = s.counts;
+  stats.innerHTML = "";
+  const items = [
+    ["Followers",         c.followers,                    "Follow someone back soon?", "green"],
+    ["Following",         c.following,                    "people you follow",        "blue"],
+    ["I don't follow back",  c.not_followed_back,         "followers I haven't reciprocated", ""],
+    ["Don't follow me back", c.dont_follow_me_back,       "might drop these",         ""],
+  ];
+  for (const [label, n, sub, cls] of items) {
+    const el = document.createElement("div");
+    el.className = "stat" + (cls ? " " + cls : "");
+    el.innerHTML = `
+      <div class="label">${label}</div>
+      <div class="num">${n.toLocaleString()}</div>
+      <div class="sub">${sub}</div>
+    `;
+    stats.appendChild(el);
+  }
+}
+
+function renderPanel(listId, countId, records, total, filterKey, rowOpts = {}) {
+  const list = $(listId);
+  const count = $(countId);
+  const q = state.filters[filterKey];
+  const filtered = filterRows(records, q);
+  list.innerHTML = "";
+  count.textContent = filtered.length === total ? `${total}` : `${filtered.length} / ${total}`;
+  if (filtered.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = total === 0 ? "Empty — nothing here." : "No matches.";
+    list.appendChild(li);
+    return;
+  }
+  for (const r of filtered) list.appendChild(row(r, rowOpts));
+}
+
+function renderEmptyForSingle() {
+  $("single-only-empty").hidden = state.data.snapshots.length > 1;
+}
+
+function renderDisabledPanel(s) {
+  const section = $("disabled-section");
+  const list = (s && s.disabled_accounts) || [];
+  // ponytail: hide the panel entirely when there's nothing to show — keeps the
+  // default `--check-disabled`-off flow visually identical to before.
+  if (list.length === 0) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  renderPanel("disabled-list", "disabled-count", list, list.length, "disabled", { flagButton: "remove" });
+}
+
+function renderWeekly() {
+  const root = $("weekly");
+  if (state.data.weeks.length === 0 || state.weekIdx < 0 || state.weekIdx >= state.data.weeks.length) {
+    root.hidden = true;
+    return;
+  }
+  const w = state.data.weeks[state.weekIdx];
+  root.hidden = false;
+  $("weekly-title").textContent = `Week over week: ${fmtDate(w.prev_folder)} → ${fmtDate(w.curr_folder)}`;
+
+  const d = $("deltas");
+  d.innerHTML = "";
+  const items = [
+    ["New followers",   w.counts.new_followers,    "up"],
+    ["Lost followers",  w.counts.lost_followers,   "down"],
+    ["New followings",  w.counts.new_followings,   "up"],
+    ["Lost followings", w.counts.lost_followings,  "down"],
+  ];
+  for (const [label, n, dir] of items) {
+    const el = document.createElement("div");
+    el.className = "delta " + (n === 0 ? "muted" : dir);
+    let display;
+    if (n === 0) {
+      display = "0";
+    } else if (dir === "up") {
+      display = "+" + n.toLocaleString();
+    } else {
+      display = "\u2212" + n.toLocaleString();
+    }
+    el.innerHTML = `
+      <div class="label">${label}</div>
+      <div class="num">${display}</div>
+    `;
+    d.appendChild(el);
+  }
+
+  renderPanel("lost-list", "lost-count", w.lost_followers, w.lost_followers.length, "lost");
+  renderPanel("nb-list",   "nb-count",   w.lost_never_followed_back, w.lost_never_followed_back.length, "nb");
+}
+
+function render() {
+  if (!state.data) return;
+  const s = state.data.snapshots[state.snapshotIdx];
+
+  $("generated").textContent = fmtAgo(state.data.generated_at);
+  renderTabs();
+  renderEmptyForSingle();
+  renderStats(s);
+  renderPanel("nfb-list", "nfb-count",  s.not_followed_back,   s.not_followed_back.length,   "nfb", { flagButton: true });
+  renderPanel("dfmb-list", "dfmb-count", s.dont_follow_me_back, s.dont_follow_me_back.length, "dfmb", { flagButton: true });
+  renderDisabledPanel(s);
+  renderWeekly();
+}
+
+async function toggleFlag(btn, username, action) {
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = action === "add" ? "Flagging…" : "Removing…";
+  try {
+    const r = await fetch("/flag", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, action }),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error(`HTTP ${r.status}: ${t || "flag failed"}`);
+    }
+    const s = state.data.snapshots[state.snapshotIdx];
+    const rec =
+      (s.dont_follow_me_back || []).find((x) => x.username === username) ||
+      (s.not_followed_back  || []).find((x) => x.username === username) ||
+      (s.mutuals            || []).find((x) => x.username === username) ||
+      (s.disabled_accounts  || []).find((x) => x.username === username);
+    if (!rec) throw new Error("row vanished from client state");
+    if (action === "add") {
+      for (const k of ["not_followed_back", "dont_follow_me_back", "mutuals"]) {
+        s[k] = (s[k] || []).filter((x) => x.username !== username);
+      }
+      s.disabled_accounts = (s.disabled_accounts || []).filter((x) => x.username !== username);
+      s.disabled_accounts.push(rec);
+    } else {
+      s.disabled_accounts = (s.disabled_accounts || []).filter((x) => x.username !== username);
+      // ponytail: on unflag we don't know the original bucket — push back to
+      // DFMB (the most common source of a manual flag). Next analyze run
+      // will reclassify it from data/disabledaccounts.json.
+      s.dont_follow_me_back = s.dont_follow_me_back.filter((x) => x.username !== username).concat([rec]);
+    }
+    s.counts.dont_follow_me_back = s.dont_follow_me_back.length;
+    s.counts.not_followed_back  = s.not_followed_back.length;
+    s.counts.disabled           = s.disabled_accounts.length;
+    s.counts.flagged            = s.disabled_accounts.length;
+    render();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = original;
+    console.error("flag POST failed:", e);
+    alert(`Could not ${action === "add" ? "flag" : "unflag"} @${username}: ${e.message}`);
+  }
+}
+
+function wireFlagButtons() {
+  if (wired.flags) return;
+  wired.flags = true;
+  // ponytail: single delegated handler at document level so newly-rendered
+  // rows don't need a fresh per-row listener. Survives render() rebuilds.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("button.flag-btn, button.unflag-btn");
+    if (!btn || !btn.dataset.username || btn.disabled) return;
+    e.preventDefault();
+    const action = btn.classList.contains("unflag-btn") ? "remove" : "add";
+    toggleFlag(btn, btn.dataset.username, action);
+  });
+}
+
+// ponytail: wireSearch/wireFlagButtons/wireImport must each only register
+// handlers ONCE — load() is called recursively from wireImport on successful
+// upload, so omitting these guards causes duplicated listeners (two renders
+// per keystroke and double alerts on flag failures).
+const wired = { search: false, flags: false, upload: false };
+
+function wireSearch() {
+  if (wired.search) return;
+  wired.search = true;
+  const wire = (inputId, key) => {
+    const el = $(inputId);
+    el.addEventListener("input", (e) => {
+      state.filters[key] = e.target.value;
+      render();
+      const fresh = $(inputId);
+      const v = fresh.value;
+      fresh.focus();
+      fresh.setSelectionRange(v.length, v.length);
+    });
+  };
+  wire("nfb-search",  "nfb");
+  wire("dfmb-search", "dfmb");
+  wire("lost-search", "lost");
+  wire("nb-search",   "nb");
+  wire("disabled-search", "disabled");
+}
+
+function wireImport() {
+  if (wired.upload) return;
+  wired.upload = true;
+  const date = $("imp-date");
+  const followers = $("imp-followers");
+  const following = $("imp-following");
+  const submit = $("imp-submit");
+  const status = $("imp-status");
+  const countChip = $("imp-count");
+  const DATE_RE = /^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])-\d{4}$/;
+
+  const setStatus = (text, kind) => {
+    status.textContent = text;
+    status.className = "imp-status " + (kind || "");
+  };
+
+  // ponytail: auto-format MM-DD-YYYY on every keystroke. The user types digits
+  // only — we insert dashes after the 2-digit month and the 2-digit day, so
+  // "07" becomes "07-", "0715" becomes "07-15-", and "07152026" becomes
+  // "07-15-2026". Pastes that already match MM-DD-YYYY pass through untouched.
+  date.addEventListener("input", () => {
+    const was = date.value;
+    if (DATE_RE.test(was)) return;
+
+    const oldStart = date.selectionStart ?? was.length;
+    const digitsBefore = was.slice(0, oldStart).replace(/\D/g, "").length;
+    const digits = was.replace(/\D/g, "").slice(0, 8);
+    let v = "";
+    for (let i = 0; i < digits.length; i++) {
+      if (i === 2 || i === 4) v += "-";
+      v += digits[i];
+    }
+
+    // Land the cursor past `digitsBefore` digits in v, then step over any
+    // newly-inserted trailing dash so the user's next keystroke lands cleanly.
+    let newCursor = 0, seen = 0;
+    for (const ch of v) {
+      if (seen >= digitsBefore) break;
+      newCursor++;
+      if (/\d/.test(ch)) seen++;
+    }
+    while (newCursor < v.length && /\D/.test(v[newCursor])) newCursor++;
+
+    if (v !== was) date.value = v;
+    date.setSelectionRange(newCursor, newCursor);
+
+    if (v.length >= 10 && !DATE_RE.test(v)) {
+      setStatus("Date must be in MM-DD-YYYY format (e.g. 07-15-2026).", "error");
+    } else if (status.classList.contains("error") && status.textContent.startsWith("Date must")) {
+      setStatus("", "");
+    }
+  });
+
+  submit.addEventListener("click", async () => {
+    const d = date.value.trim();
+    if (!d) {
+      setStatus("Please enter the date in MM-DD-YYYY format (e.g. 07-15-2026).", "error");
+      date.focus();
+      return;
+    }
+    // ponytail: refuse early — server is strict MM-DD-YYYY, so a 50MB upload would just 400.
+    if (!DATE_RE.test(d)) {
+      setStatus("Date must be in MM-DD-YYYY format (e.g. 07-15-2026).", "error");
+      date.focus();
+      return;
+    }
+    const f = followers.files && followers.files[0];
+    const g = following.files && following.files[0];
+    if (!f || !g) {
+      setStatus("Please pick both the followers and following JSON files.", "error");
+      return;
+    }
+    submit.disabled = true;
+    setStatus(`Adding snapshot for ${d}…`, "loading");
+    let importedDate = d;
+    let importedF = 0, importedG = 0;
+    try {
+      const fd = new FormData();
+      fd.set("date", d);
+      fd.set("followers", f, f.name);
+      fd.set("following", g, g.name);
+      const r = await fetch("/import", {
+        method: "POST", body: fd,
+        headers: { "Connection": "close" },
+      });
+      // ponytail: server returns {ok:false, error:"..."} JSON on validation
+      // failure so the alert text stays clean instead of leaking HTML markup.
+      const t = await r.text();
+      let data;
+      try { data = JSON.parse(t); } catch { data = { ok: r.ok }; }
+      if (!r.ok || !data.ok) {
+        const msg = (data && data.error) || t || `HTTP ${r.status}`;
+        throw new Error(msg);
+      }
+      importedDate = data.date;
+      importedF = data.followers;
+      importedG = data.following;
+      setStatus(`Added ${importedF.toLocaleString()} followers + ${importedG.toLocaleString()} followings for ${importedDate}. Refreshing…`, "ok");
+      await load();
+      setStatus(`Added ${importedF.toLocaleString()} followers + ${importedG.toLocaleString()} followings for ${importedDate}.`, "ok");
+      if (countChip) {
+        countChip.textContent = `${importedDate}: +${importedF.toLocaleString()} followers`;
+        countChip.hidden = false;
+      }
+      followers.value = "";
+      following.value = "";
+      date.value = "";
+    } catch (e) {
+      setStatus(`Failed: ${e.message || e}`, "error");
+      // ponytail: clear any stale chip from a prior successful upload so the
+      // section header doesn't lie about the latest count after a failure.
+      if (countChip) {
+        countChip.textContent = "";
+        countChip.hidden = true;
+      }
+    } finally {
+      submit.disabled = false;
+    }
+  });
+}
+
+// ponytail: cache-bust via Date.now() on the report URL so re-running python run.py reflects on refresh.
+async function load() {
+  const r = await fetch("/dist/report.json?v=" + Date.now(), { cache: "no-store" });
+  if (!r.ok) throw new Error("failed to load report.json");
+  state.data = await r.json();
+  state.snapshotIdx = state.data.snapshots.length - 1;
+  state.weekIdx = state.data.weeks.length - 1;
+  wireSearch();
+  wireFlagButtons();
+  wireImport();
+  render();
+}
+
+load().catch((e) => {
+  document.body.innerHTML = `<div class="wrap"><div class="empty-state">
+    <strong>Could not load report.</strong><br><br>
+    Make sure you ran <code>python run.py</code> first
+    (or <code>serve.bat</code> on Windows) so <code>dist/report.json</code> exists.
+    <br><br><em>${e.message}</em>
+  </div></div>`;
+});
+</script>
+</body>
+</html>
