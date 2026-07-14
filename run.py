@@ -40,11 +40,12 @@ A positional port argument overrides the default 8000.
 
 ponytail: usernames are lower-cased for set membership — defensive against
 casing changes in future Instagram exports.
-ponytail: bind the http server to localhost only — never expose the report.
+ponytail: bind the http server to 127.0.0.1 (IPv4 loopback) — never expose the report.
 """
 from __future__ import annotations
 
 import argparse
+import errno
 import functools
 import http.server
 import json
@@ -54,6 +55,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import webbrowser
@@ -262,6 +264,38 @@ def _selftest() -> None:
             assert False, f"should have rejected {bad!r}"
         except ValueError:
             pass
+
+    # ponytail: regression-test the friendly bind-error path so a future
+    # refactor cannot silently regress the user-facing recipes the README
+    # now promises. Spin one server in a thread, then a second bind to the
+    # same port must raise SystemExit carrying both the platform-appropriate
+    # recipe and the literal `python run.py <port+1>` fallback hint.
+    h1 = _run_server(0)
+    busy_port = h1.server_address[1]
+    t1 = threading.Thread(target=h1.serve_forever, daemon=True)
+    t1.start()
+    time.sleep(0.3)
+    try:
+        try:
+            _run_server(busy_port)
+        except SystemExit as e:
+            msg = str(e)
+            expected_recipe = "tasklist" if sys.platform == "win32" else "lsof"
+            assert expected_recipe in msg, f"missing platform recipe {expected_recipe!r} in: {msg!r}"
+            assert f"python run.py {busy_port + 1}" in msg, f"missing port+1 fallback in: {msg!r}"
+        else:
+            # ponytail: silent-false-negative guard. If the second bind
+            # succeeded without raising SystemExit, the friendly-error
+            # regression slipped through -- fail loudly.
+            raise AssertionError(
+                f"second _run_server({busy_port}) unexpectedly succeeded; "
+                f"friendly-error regression slipped through."
+            )
+    finally:
+        h1.shutdown()
+        h1.server_close()
+        t1.join(timeout=2)
+
     print("self-check ok")
 
 
@@ -522,7 +556,7 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
     fall through to super(). Silent default access log keeps the server
     terminal quiet while the user pokes at the UI.
 
-    ponytail: bind to localhost only — refusing to expose the report on the LAN.
+    ponytail: bind to 127.0.0.1 (IPv4 loopback) — refusing to expose the report on the LAN.
     """
     IMPORT_MAX_BYTES = 50_000_000  # ~50 MB; an IG export is JSON only, well under
 
@@ -649,23 +683,60 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def _run_server(port: int) -> http.server.HTTPServer:
-    """Bind the static handler to localhost:<port> and return a HTTPServer ready
-    to serve_forever(). Splits out browser-launch and main-loop from serve() so
-    tests can drive the HTTP layer without spawning a browser window.
+    """Bind the static handler to 127.0.0.1:<port> (IPv4 loopback) and return
+    a HTTPServer ready to serve_forever(). Splits out browser-launch and
+    main-loop from serve() so tests can drive the HTTP layer without
+    spawning a browser window.
 
-    ponytail: bind to localhost only — refusing to expose the report on the LAN.
+    ponytail: bind to 127.0.0.1 (IPv4 loopback) — refusing to expose the report on the LAN.
+    ponytail: SO_REUSEADDR lets a half-cleaned port from a crashed prior run
+    (TIME_WAIT) bind cleanly without waiting -- but on Linux/Mac only. Windows'
+    SO_REUSEADDR semantics permit stealing an *active* listener, which would
+    silently defeat the friendly-error path. On Windows we keep Python's
+    default (no reuse) so an active-listener bind attempt still raises and
+    surfaces the recipe below.
     """
     handler = functools.partial(FlagHandler, directory=str(ROOT))
-    try:
-        return http.server.HTTPServer(("localhost", port), handler)
-    except OSError as e:
-        raise SystemExit(f"port {port} is busy ({e}); try a different port") from e
 
+    # ponytail: local subclass so the SO_REUSEADDR knob stays inside this
+    # function. Mutating http.server.HTTPServer.allow_reuse_address globally
+    # would leak the flag into any other HTTPServer construction in the process.
+    class _Server(http.server.HTTPServer):
+        allow_reuse_address = sys.platform != "win32"
+
+    try:
+        return _Server(("127.0.0.1", port), handler)
+    except OSError as e:
+        # ponytail: errno-only classification -- EADDRINUSE is 98 on Linux/Mac
+        # and WSAEADDRINUSE is 10048 on Windows. Other failures fall through
+        # to a "try a different port" hint below.
+        if e.errno == errno.EADDRINUSE:
+            on_windows = sys.platform == "win32"
+            if on_windows:
+                # ponytail: use the user's literal tasklist + taskkill recipe
+                # (manual PID pick — we never force-kill a process by name).
+                find_cmd = "tasklist | findstr python.exe"
+                kill_cmd = "taskkill /F /PID <pid>"
+            else:
+                find_cmd = f"lsof -i :{port}"
+                kill_cmd = f"lsof -ti :{port} | xargs kill"
+            raise SystemExit(
+                f"port {port} is in use by another process.\n"
+                f"\n"
+                f"  If a stale python run.py still holds {port}:\n"
+                f"    {find_cmd}\n"
+                f"    {kill_cmd}\n"
+                f"  ...or just pick a different port:\n"
+                f"    python run.py {port + 1}\n"
+            ) from e
+        raise SystemExit(
+            f"port {port}: {e} -- try a different port: python run.py {port + 1}"
+        ) from e
 
 def serve(port: int) -> None:
     """Start http server on localhost:<port> and open the browser. Blocks until Ctrl+C.
 
-    ponytail: bind to localhost only — refusing to expose the report on the LAN."""
+    ponytail: bind to 127.0.0.1 (IPv4 loopback) — refusing to expose the report on the LAN."""
     httpd = _run_server(port)
     url = f"http://localhost:{port}/"
     print(f"Serving on {url}  (Ctrl+C to stop)", flush=True)

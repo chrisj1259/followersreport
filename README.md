@@ -107,7 +107,7 @@ Both `data/` and `dist/` are git-ignored. They live only on your machine.
 
 ## Privacy
 
-Everything runs on `localhost` (127.0.0.1). The HTTP server binds there and nowhere else, so your report is never visible to anyone on your LAN.
+The HTTP server is hard-pinned to `127.0.0.1` (IPv4 loopback), not the bare `localhost` host — so the bind lands on the address your browser opens regardless of `getaddrinfo`. Your report is never visible to anyone on your LAN.
 
 The one optional external call is `--check-disabled`, which makes anonymous `instagram.com/<handle>` HEAD requests without authentication or cookies. Off by default.
 
@@ -127,8 +127,22 @@ python run.py import <src> --date X # stage a new snapshot; no serve
 
 ## Help! Something went wrong
 
-**`port 8000 is busy — try a different port`**  
-Run with a custom port: `python run.py 9000`.
+**`port 8000 is in use by another process`**  
+Another `python run.py` is bound to that port (typically a stale process from a crashed prior run). On Windows, pick the right PID from the list and force-kill it:
+
+```
+tasklist | findstr python.exe
+taskkill /F /PID <pid>
+```
+
+On macOS / Linux, `SO_REUSEADDR` lets the kernel hand the port back from a `TIME_WAIT` socket immediately — a fresh `python run.py` right after a crash binds cleanly without seeing this error. If you’d rather kill the stale process explicitly, the recipe the server prints is:
+
+```
+lsof -i :8000
+lsof -ti :8000 | xargs kill
+```
+
+…or just rerun on a different port: `python run.py 8001`.
 
 **`unrecognized folder name: '<something>'`**  
 A folder in `data/` has a name that isn't a date. Rename it to `MM-DD-YYYY` or remove it. The parser also skips folders whose single-digit parts don't fit the format with a one-line warning — read your terminal output.
