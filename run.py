@@ -69,6 +69,31 @@ OUT = ROOT / "dist" / "report.json"
 DISABLED_FILE = DATA / "disabledaccounts.json"
 DEFAULT_PORT = 8000
 
+
+def _set_data_paths(*, data_dir: Path, out_dir: Path, disabled_file: Path) -> None:
+    """Mutate module-level DATA / OUT / DISABLED_FILE so the desktop entry
+    point (app.py under pywebview+PyInstaller) can redirect every write to
+    `%APPDATA%\\InstagramFollowerReport\\` without forking the analyze pipeline.
+
+    PONYTAIL: dedicated helper rather than thread-the-path-through-every-fn.
+    CLI runs keep the CWD-relative defaults untouched.
+    """
+    global DATA, OUT, DISABLED_FILE, ROOT
+    DATA = data_dir
+    OUT = out_dir / "report.json"
+    DISABLED_FILE = disabled_file
+    # ponytail: also rebind ROOT to out_dir.parent so run_analyze's end-of-run
+    # summary print (`OUT.relative_to(ROOT)`) doesn't blow up with
+    # 'is not in the subpath of' when the bundled app reroutes OUT to
+    # %APPDATA%. CLI calls keep the original project-root ROOT because the
+    # defaults are unchanged when this helper is never invoked. The smoke
+    # test caught this exactly: report.json wrote correctly, then the print
+    # crashed the analyze topline; FlagHandler._handle_import's `except
+    # SystemExit` doesn't catch ValueError so the in-app Import button
+    # would silently 500 the user with files staged but no UI refresh.
+    ROOT = out_dir.parent
+
+
 # ponytail: disabled-account sniff is heuristic — Instagram can change their
 # markup tomorrow. We never silently drop handles on network failure; an
 # unclear verdict keeps the user in the active list.
@@ -524,20 +549,33 @@ def fold_pair(prev: tuple[str, list[dict], list[dict]],
     # This also excludes anyone who followed me back between snapshots.
     lost_never_followed_back = (gset_p - gset_c) - fset_p - fset_c
 
+    # ponytail: `unilateral_unfollowed` is a semantic COMPLEMENT to
+    # `lost_never_followed_back`. The latter captures "I unfollowed
+    # them and they never followed me back"; this captures "they
+    # unfollowed me and I never followed them back" -- the one-sided
+    # follower relationship where the follower side lapsed before I
+    # ever reciprocated. Excludes anyone who ever had a mutual follow
+    # (gset_p or gset_c), so the panel only shows pure unrequited
+    # losses. Preserves prev-snapshot records via by_p_f so timestamps
+    # match what was actually observed.
+    unilateral_unfollowed = (fset_p - fset_c) - gset_p - gset_c
+
     return {
         "prev_folder": p_name,
         "curr_folder": c_name,
         "counts": {
-            "new_followers":    len(new_f),
-            "lost_followers":   len(lost_f),
-            "new_followings":   len(new_g),
-            "lost_followings":  len(lost_g),
+            "new_followers":          len(new_f),
+            "lost_followers":         len(lost_f),
+            "new_followings":         len(new_g),
+            "lost_followings":        len(lost_g),
+            "unilateral_unfollowed":  len(unilateral_unfollowed),
         },
         "lost_followers":          by_ts_desc([by_p_f[u] for u in lost_f]),
         "new_followers":           by_ts_desc([by_c_f[u] for u in new_f]),
         "lost_followings":         by_ts_desc([by_p_g[u] for u in lost_g]),
         "new_followings":          by_ts_desc([by_c_g[u] for u in new_g]),
         "lost_never_followed_back": by_ts_desc([by_p_g[u] for u in lost_never_followed_back]),
+        "unilateral_unfollowed":   by_ts_desc([by_p_f[u] for u in unilateral_unfollowed]),
     }
 
 
@@ -565,8 +603,30 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_flag()
         elif self.path == "/import":
             self._handle_import()
+        elif self.path == "/delete":
+            self._handle_delete()
         else:
             self.send_error(404, "no such endpoint")
+
+    def do_GET(self) -> None:  # type: ignore[override]
+        # ponytail: /snapshots is a JSON endpoint, not a static file. Intercept
+        # BEFORE super().do_GET() runs translate_path + serves-from-disk, so
+        # /snapshots doesn't get 404 by being mapped to MEIPASS/snapshots.
+        # Everything else (static HTML / /dist/*) still falls through to the
+        # inherited handler -- _SplitFlagHandler.app.py's translate_path
+        # override still applies because Python resolves self.translate_path
+        # dynamically at call time.
+        if self.path == "/snapshots":
+            self._handle_list_snapshots()
+            return
+        super().do_GET()
+
+    def end_headers(self) -> None:  # type: ignore[override]
+        # ponytail: WebView2 / Edge caches static files aggressively. Force
+        # every response (index.html, /dist/*, JSON) to be revalidated so
+        # app updates are visible immediately after reinstall.
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        super().end_headers()
 
     def _send_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -599,6 +659,155 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             return
         self._send_json(200, {"ok": True, "username": username.lower(),
                               "action": action, "total": len(new_list)})
+
+    def _handle_list_snapshots(self) -> None:
+        """GET /snapshots -- return every dated folder on disk as JSON.
+
+        ponytail: separate from /flag and /import because the listing UI
+        fires once on init and again after any /delete, so it's a GET not
+        a POST. Cache-Control: no-store is set by _send_json, so each
+        load() call re-hits disk and reflects the post-mutation state.
+        The 'warnings' field carries non-date folders under DATA so GUI
+        users get the same diagnostic run_analyze prints to stderr in CLI
+        mode (reviewer-caught: silent-skip left GUI users guessing why
+        their hand-typed folder wasn't surfaced).
+        """
+        try:
+            items, warnings = _list_snapshots()
+        except OSError as e:
+            self.send_error(500, f"could not list snapshots: {e}")
+            return
+        self._send_json(200, {"ok": True, "snapshots": items, "warnings": warnings})
+
+    def _handle_delete(self) -> None:
+        """POST /delete -- permanently remove a single dated snapshot folder
+        from DATA/<date>/. Mirrors the body-validation shape of _handle_flag
+        (small JSON body, username-shaped) but with a single 'date' field
+        instead of 'username' + 'action'.
+
+        ponytail: same final-action shape as _handle_import (rmtree +
+        run_analyze) so the post-delete report.json re-derives from
+        remaining snapshots on disk. If the deleted snapshot was the
+        last one, run_analyze raises SystemExit -- fall through to
+        _emit_stub_report so the next page load renders the empty-state
+        UI instead of the stale 'last-snapshot' content.
+        """
+        length = int(self.headers.get("Content-Length") or "0")
+        if length <= 0 or length > 4096:
+            self.send_error(400, "empty or oversized body")
+            return
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            date_str = str(body.get("date", "")).strip()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.send_error(400, "bad json body")
+            return
+        if not date_str:
+            self.send_error(400, "missing 'date'")
+            return
+        try:
+            parse_folder_date(date_str)
+        except ValueError as e:
+            self.send_error(400, f"bad date: {e}")
+            return
+        target = DATA / date_str
+        # ponytail: capture how many OTHER dated folders will remain AFTER
+        # rmtree. Drives the is_last flag below -- if we're going to be
+        # left with zero dated folders, we must write the empty-state stub
+        # ourselves (NOT delegate to run_analyze), because analyze raises
+        # SystemExit in that case and any failure in the stub-write
+        # fallback would leave the user with stale pre-delete content
+        # in dist/report.json.
+        remaining_count = 0
+        if DATA.exists():
+            for p in DATA.iterdir():
+                if not p.is_dir() or p.name == date_str:
+                    continue
+                try:
+                    parse_folder_date(p.name)
+                except ValueError:
+                    continue
+                remaining_count += 1
+        is_last = remaining_count == 0
+
+        # ponytail: defense-in-depth against pre-existing symlinks under
+        # DATA pointing outside it. parse_folder_date's regex above
+        # already filters path-traversal chars, so target_resolved can
+        # only differ from the literal DATA/<date_str> path via a
+        # symlink that someone placed under DATA by hand; this catches
+        # it before shutil.rmtree walks off the data dir. Symlink
+        # protection is the only residual attack surface once the regex
+        # has filtered the input -- the comment from earlier ("USB
+        # drive letter, hand-crafted date field with ..") overstated
+        # the threat model because the regex itself rejects all of that.
+        if not target.is_dir():
+            self.send_error(404, f"snapshot {date_str} does not exist")
+            return
+        try:
+            target_resolved = target.resolve()
+            data_resolved = DATA.resolve()
+        except OSError:
+            target_resolved = target
+            data_resolved = DATA
+        try:
+            target_resolved.relative_to(data_resolved)
+        except ValueError:
+            self.send_error(400, f"refusing to delete path outside {DATA}")
+            return
+        try:
+            shutil.rmtree(target)
+        except OSError as e:
+            self.send_error(500, f"could not delete {target}: {e}")
+            return
+
+        # ponytail: pre-empt the dual-failure mode the reviewer caught.
+        # If THIS was the last folder AND run_analyze then raises
+        # SystemExit (no folders left), AND _emit_stub_report raises
+        # OSError (OneDrive-locked %APPDATA%, disk full) -- without a
+        # pre-write, dist/report.json would still hold the pre-delete
+        # content and a page refresh would show phantom data. Writing
+        # the stub FIRST guarantees the on-disk JSON is at worst the
+        # correct empty-state, not stale. Reviewer caught this as the
+        # top severity finding in the audit.
+        if is_last:
+            try:
+                _emit_stub_report()
+            except OSError as e:
+                self.send_error(500, f"deleted {date_str} but could not write stub report: {e}")
+                return
+
+        # ponytail: analyze-or-stub for the typical (other-folders-still-
+        # exist) case. If analyze succeeds it overwrites our stub with
+        # real content (fine). If analyze raises SystemExit (race: a
+        # different folder vanished between our pre-write and now) we
+        # fall back to a stub-write -- best-effort because the
+        # remaining_count check above should already have caught that.
+        try:
+            run_analyze(argparse.Namespace(check_disabled=False))
+        except SystemExit:
+            try:
+                _emit_stub_report()
+            except OSError:
+                # ponytail: both branches fired. OUT may be stale but the
+                # user can recover by re-launching the app, which will
+                # re-trigger _auto_generate_report's stub-write path anyway.
+                pass
+        except OSError as e:
+            # ponytail: if is_last pre-write above succeeded, the stub is
+            # already on disk and OUT is unchanged by analyze's failed
+            # write_text (it's the LAST step, after all other work). The
+            # post-delete state on disk (stub report + zero folders) is
+            # therefore still exactly what the user asked for, so a 500
+            # here would lie about reality -- log to stderr and return
+            # success. For the non-is_last case, OUT still holds the
+            # pre-delete content (stale but recoverable on relaunch) so
+            # the 500 + recovery hint matches the actual disk state.
+            if is_last:
+                print(f"warning: deleted {date_str}; analyze post-step failed: {e} -- dist/report.json is the empty-state stub", file=sys.stderr)
+            else:
+                self.send_error(500, f"deleted {date_str} but analyze failed: {e}")
+                return
+        self._send_json(200, {"ok": True, "deleted": date_str})
 
     def _handle_import(self) -> None:
         """Stage an in-browser upload into data/<date>/ and refresh the report.
@@ -661,7 +870,16 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             # check_disabled off the Namespace.
             try:
                 run_analyze(argparse.Namespace(check_disabled=False))
-            except SystemExit as e:
+            # ponytail: broaden from SystemExit-only to (SystemExit, OSError).
+            # run_analyze's final OUT.write_text() can raise OSError on
+            # disk-full (ENOSPC), read-only filesystem (EROFS), or
+            # OneDrive-locked %APPDATA%\...\dist\ (PermissionError on Windows).
+            # The bundled Import button would otherwise surface this as a
+            # connection-reset / silent 500 instead of a clean, parseable
+            # 500+message that the in-app UI can render. Reviewer caught this
+            # as the second remaining import-flow bug after Fix #1 (ROOT
+            # rebind in _set_data_paths) made ValueError-on-print unreachable.
+            except (SystemExit, OSError) as e:
                 if not dest_existed:
                     # Only safe to sweep when the folder was newly created by
                     # _stage_snapshot — anything that was there before this
@@ -682,7 +900,7 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def _run_server(port: int) -> http.server.HTTPServer:
+def _run_server(port: int, handler_cls: type = FlagHandler) -> http.server.HTTPServer:
     """Bind the static handler to 127.0.0.1:<port> (IPv4 loopback) and return
     a HTTPServer ready to serve_forever(). Splits out browser-launch and
     main-loop from serve() so tests can drive the HTTP layer without
@@ -695,8 +913,13 @@ def _run_server(port: int) -> http.server.HTTPServer:
     silently defeat the friendly-error path. On Windows we keep Python's
     default (no reuse) so an active-listener bind attempt still raises and
     surfaces the recipe below.
+    ponytail: handler_cls is parameterized so the desktop entry point
+    (app.py) can pass a subclass that splits /dist/* and /data/* over to
+    %APPDATA% while everything else still resolves under the bundled
+    PyInstaller MEIPASS dir. Default stays FlagHandler — every existing
+    caller's behavior is preserved.
     """
-    handler = functools.partial(FlagHandler, directory=str(ROOT))
+    handler = functools.partial(handler_cls, directory=str(ROOT))
 
     # ponytail: local subclass so the SO_REUSEADDR knob stays inside this
     # function. Mutating http.server.HTTPServer.allow_reuse_address globally
@@ -747,6 +970,93 @@ def serve(port: int) -> None:
         pass
     finally:
         httpd.server_close()
+
+
+# ---------- snapshot inventory + stub fallback ----------
+
+
+def _list_snapshots() -> tuple[list[dict], list[str]]:
+    """Return ({date, followers, following, imported_at}, warnings).
+
+    ponytail: walks DATA once, partitioning entries into dated folders
+    (returned with per-folder record counts) and non-date folders
+    (returned as observer warnings). The dual-purpose walk matches
+    run_analyze's partition-then-folder list so a typo'd folder under
+    DATA surfaces via the /snapshots warnings field instead of being
+    silently pruned -- a CLI user sees the same warning on stderr from
+    run_analyze, a GUI user now sees it on the manage panel. Counts via
+    load_json_records (NOT read_snapshot's full summary) -- intentional
+    cost-skip since the listing UI just needs record counts.
+    """
+    items: list[dict] = []
+    warnings: list[str] = []
+    if not DATA.exists():
+        return items, warnings
+    dated: list[tuple[datetime, Path]] = []
+    for p in DATA.iterdir():
+        if not p.is_dir():
+            continue
+        try:
+            dt = parse_folder_date(p.name)
+        except ValueError:
+            warnings.append(p.name)
+            continue
+        dated.append((dt, p))
+    dated.sort(key=lambda t: t[0])
+    for _, p in dated:
+        n_f, n_g = 0, 0
+        for f in sorted(p.glob("*.json")):
+            n = f.name.lower()
+            recs = load_json_records(f)
+            if not recs:
+                continue
+            if "follower" in n or "folower" in n:
+                n_f += len(recs)
+            elif "following" in n:
+                n_g += len(recs)
+        # ponytail: folder mtime is set on Folder.mkdir() in _stage_snapshot
+        # and only changes on a subsequent overwriting re-import. Use it as
+        # "imported_at" -- the user can see at-a-glance when each snapshot
+        # was staged.
+        try:
+            mtime = p.stat().st_mtime
+            imported_at = datetime.fromtimestamp(mtime).isoformat(timespec="seconds")
+        except OSError:
+            imported_at = ""
+        items.append({
+            "date": p.name,
+            "followers": n_f,
+            "following": n_g,
+            "imported_at": imported_at,
+        })
+    return items, warnings
+
+
+def _emit_stub_report() -> None:
+    """Write an empty report.json under OUT so the window can render the
+    empty-state UI instead of the 'Could not load report' fallback.
+
+    ponytail: same shape as run_analyze would have produced for zero
+    snapshots, so render() / latestSnapshot() consume it without
+    branching. Shared by app.py:_auto_generate_report (first launch with
+    no data) and FlagHandler._handle_delete (last snapshot just
+    removed) -- dedup keeps the stub schema in one place so a future
+    schema bump only touches one function.
+    """
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(
+        json.dumps(
+            {
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "snapshots": [],
+                "weeks": [],
+                "unilateral_unfollowed": [],
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 # ---------- cli + main ----------
@@ -910,6 +1220,17 @@ def run_analyze(args: argparse.Namespace) -> None:
     for i in range(len(raw_pairs) - 1):
         weeks.append(fold_pair(raw_pairs[i], raw_pairs[i + 1]))
 
+    # ponytail: compute the GLOBAL 'people who unfollowed me that I never
+    # followed' set across ALL snapshots, not just the latest pair. Someone
+    # who followed me months ago, unfollowed at any point, and was never
+    # followed back should still surface here. Build from raw_pairs so we
+    # use the actual records (with timestamps) from the snapshot where each
+    # follower was last seen. raw_pairs is guaranteed non-empty here.
+    ever_f = {r["username"]: r for _, fs, _ in raw_pairs for r in fs}
+    ever_g = {r["username"] for _, _, gs in raw_pairs for r in gs}
+    latest_f = {r["username"] for r in raw_pairs[-1][1]}
+    global_unilateral = by_ts_desc([ever_f[u] for u in ever_f.keys() - latest_f - ever_g])
+
     if args.check_disabled:
         for snap in snapshots:
             n = len(snap["dont_follow_me_back"])
@@ -920,6 +1241,7 @@ def run_analyze(args: argparse.Namespace) -> None:
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "snapshots": snapshots,
         "weeks": weeks,
+        "unilateral_unfollowed": global_unilateral,
     }
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

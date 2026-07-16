@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
 <title>Instagram Follower Report</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -11,9 +12,8 @@
   /* ponytail: design language lifted from designinspo/design.html — Inter Tight
   font, pill-shaped chips, FA5D29 / 49B3FC / AAEEC4 / 502bd8 accent palette,
   uppercase eyebrow labels with .1em tracking, soft pastel count badges, and
-  rounded 4 / 8 / 16px corners. Light editorial primary bg; a single dark
-  --bg-secondary section is used for the 'Likely disabled' panel so flagged
-  accounts visually stand apart from the active lists. */
+  rounded 4 / 8 / 16px corners. Light editorial primary bg; disclosure
+  sections share the same white card surface. */
   :root {
     /* font tokens — Inter Tight variable, weights matched to Awwwards */
     --font-1: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Inter", sans-serif;
@@ -147,8 +147,7 @@
     width: 4px; height: 100%;
     background: var(--color-orange);
   }
-  .stat.blue::before { background: var(--color-blue); }
-  .stat.green::before { background: var(--color-inspire); }
+
   .stat.purple::before { background: var(--color-awards); }
   .stat .label {
     font-size: 11px;
@@ -217,7 +216,6 @@
     background: var(--color-soft-orange);
     color: var(--color-orange);
   }
-  .panel.blue h2 .count { background: var(--color-soft-blue); color: var(--color-blue); }
   .panel.purple h2 .count { background: var(--color-soft-purple); color: var(--color-awards); }
   .search {
     width: 100%;
@@ -314,14 +312,12 @@
   .list li button.unflag-btn:hover { background: var(--color-blue);   color: var(--color-white); border-color: var(--color-blue); }
   .list li button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  /* ---------- disabled / flagged dark section ---------- */
-  /* ponytail: dark panel with full descendant color override so link blue /
-  inherited dark text can't paint black-on-black. */
-  section.disabled-section, section.disabled-section * {
-    color: var(--color-white);
-  }
+  /* ---------- disabled / flagged section ---------- */
+  /* ponytail: mirrors .unilateral-section — same white card surface, orange
+  left accent, and light search/list tokens as the other disclosure panels. */
   section.disabled-section {
-    background: var(--bg-secondary);
+    background: var(--bg-card);
+    border: var(--border-normal) solid var(--border-gray);
     border-radius: var(--rounded-large);
     padding: 22px;
     margin-bottom: 28px;
@@ -343,47 +339,32 @@
     min-width: 24px;
     padding: 2px 10px;
     border-radius: var(--pill);
-    background: var(--color-orange);
-    color: var(--color-white);
+    background: var(--color-soft-orange);
+    color: var(--color-orange);
     font-size: 11px;
     font-weight: var(--font-bold);
   }
   section.disabled-section .explainer {
-    color: rgba(255,255,255,0.78);
+    color: var(--color-muted);
     font-size: 12px;
     margin: 0 0 14px;
     line-height: 1.6;
   }
   section.disabled-section .explainer code {
-    background: rgba(255,255,255,0.12);
+    background: var(--bg-primary);
     padding: 1px 6px;
     border-radius: var(--rounded-small);
-    font-family: var(--font-1);
-    font-weight: var(--font-medium);
+    font-family: ui-monospace, "JetBrains Mono", monospace;
     font-size: 11px;
-    color: var(--color-white);
+    color: var(--color-orange);
   }
   section.disabled-section .search {
-    background: rgba(255,255,255,0.08);
-    border-color: rgba(255,255,255,0.22);
-    color: var(--color-white);
+    background: var(--bg-primary);
+    border-color: var(--border-gray);
+    color: var(--color-primary);
   }
-  section.disabled-section .search::placeholder { color: rgba(255,255,255,0.5); }
-  section.disabled-section .search:focus { background: rgba(255,255,255,0.18); border-color: var(--color-orange); color: var(--color-white); }
-  section.disabled-section .list { color: var(--color-white); }
-  section.disabled-section .list li:hover { background: rgba(255,255,255,0.07); }
-  section.disabled-section .list li a.u:hover { color: var(--color-orange); }
-  section.disabled-section .list li .when { color: rgba(255,255,255,0.72); }
-  section.disabled-section .list .empty { color: rgba(255,255,255,0.55); }
-  section.disabled-section .list li button.unflag-btn {
-    color: var(--color-white);
-    border-color: rgba(255,255,255,0.32);
-  }
-  section.disabled-section .list li button.unflag-btn:hover {
-    background: var(--color-orange);
-    color: var(--color-white);
-    border-color: var(--color-orange);
-  }
+  section.disabled-section .search::placeholder { color: var(--color-muted); }
+  section.disabled-section .search:focus { border-color: var(--color-orange); }
 
   /* disclosure toggle: red circle with chevron, positioned above the body
   content of the Likely-disabled section so users can collapse/expand the
@@ -578,6 +559,277 @@
   .import-status.ok { color: var(--color-inspire); font-weight: var(--font-medium); }
   .import-status.ok code { color: var(--color-primary); font-family: ui-monospace, "JetBrains Mono", monospace; }
   .import-status.err { color: var(--color-orange); font-weight: var(--font-medium); }
+
+  /* ---------- unilateral unfollowed section ---------- */
+  /* ponytail: mirrors .disabled-section disclosure widget but keeps the
+  light-card surface and purple accent of the original .panel.purple.
+  The chevron circle expands .unilateral-body via max-height + opacity. */
+  section.unilateral-section {
+    background: var(--bg-card);
+    border: var(--border-normal) solid var(--border-gray);
+    border-radius: var(--rounded-large);
+    padding: 22px;
+    margin-bottom: 28px;
+  }
+  section.unilateral-section h2 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    font-weight: var(--font-bold);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  section.unilateral-section h2 .count {
+    display: inline-flex;
+    align-items: center;
+    min-width: 24px;
+    padding: 2px 10px;
+    border-radius: var(--pill);
+    background: var(--color-soft-orange);
+    color: var(--color-orange);
+    font-size: 11px;
+    font-weight: var(--font-bold);
+  }
+  section.unilateral-section .explainer {
+    color: var(--color-muted);
+    font-size: 12px;
+    margin: 0 0 14px;
+    line-height: 1.6;
+  }
+  section.unilateral-section .search {
+    background: var(--bg-primary);
+    border-color: var(--border-gray);
+    color: var(--color-primary);
+  }
+  section.unilateral-section .search::placeholder { color: var(--color-muted); }
+  section.unilateral-section .search:focus { border-color: var(--color-orange); }
+  section.unilateral-section .disclosure-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: var(--color-orange);
+    color: var(--color-white);
+    border: 0;
+    cursor: pointer;
+    padding: 0;
+    margin: 4px 0 10px;
+    transition: background 160ms ease, transform 160ms ease;
+  }
+  section.unilateral-section .disclosure-toggle:hover { background: #e14e22; }
+  section.unilateral-section .disclosure-toggle:focus-visible {
+    outline: 2px solid var(--color-orange);
+    outline-offset: 3px;
+  }
+  section.unilateral-section .disclosure-toggle svg { transition: transform 220ms ease-out; }
+  section.unilateral-section[data-collapsed="false"] .disclosure-toggle svg { transform: rotate(180deg); }
+  section.unilateral-section .unilateral-body {
+    max-height: 1500px;
+    opacity: 1;
+    overflow: hidden;
+    transition: max-height 360ms ease-out, opacity 220ms ease-out;
+  }
+  section.unilateral-section[data-collapsed="true"] .unilateral-body {
+    max-height: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* ---------- manage snapshots ---------- */
+  /* ponytail: same card surface as .add-data but with a row+delete-button
+  layout. List rows inherit the .list flex rules from above (gap, hover
+  background, padding) so the second child pushes to the right under
+  justify-content: space-between without any per-section override. */
+  section.manage-data {
+    background: var(--bg-card);
+    border: var(--border-normal) solid var(--border-gray);
+    border-radius: var(--rounded-large);
+    padding: 22px;
+    margin-bottom: 28px;
+  }
+  section.manage-data h2 {
+    margin: 0 0 6px;
+    font-size: 13px;
+    font-weight: var(--font-bold);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-primary);
+  }
+  section.manage-data .explainer {
+    color: var(--color-muted);
+    font-size: 12px;
+    margin: 0 0 16px;
+    line-height: 1.6;
+  }
+  section.manage-data .explainer code, section.manage-data .explainer strong {
+    color: var(--color-primary);
+  }
+  section.manage-data .explainer code {
+    background: var(--bg-primary);
+    padding: 1px 6px;
+    border-radius: var(--rounded-small);
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--color-orange);
+  }
+  section.manage-data .explainer em {
+    color: var(--color-orange);
+    font-style: normal;
+    font-weight: var(--font-bold);
+  }
+  section.manage-data ul.snapshot-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  section.manage-data ul.snapshot-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: var(--rounded-normal);
+    transition: background 120ms ease;
+  }
+  section.manage-data ul.snapshot-list li:hover { background: var(--bg-hover); }
+  section.manage-data ul.snapshot-list .snap-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+  section.manage-data ul.snapshot-list .snap-date {
+    font-size: 14px;
+    font-weight: var(--font-bold);
+    letter-spacing: -0.005em;
+    color: var(--color-primary);
+  }
+  section.manage-data ul.snapshot-list .snap-meta {
+    font-size: 12px;
+    color: var(--color-muted);
+    font-weight: var(--font-medium);
+  }
+  section.manage-data ul.snapshot-list .snap-meta b {
+    color: var(--color-primary);
+    font-weight: var(--font-bold);
+    font-variant-numeric: tabular-nums;
+  }
+  section.manage-data ul.snapshot-list .delete-btn {
+    appearance: none;
+    background: transparent;
+    color: var(--color-orange);
+    border: var(--border-normal) solid var(--border-gray);
+    border-radius: var(--pill);
+    padding: 5px 14px;
+    font: inherit;
+    font-size: 11px;
+    font-weight: var(--font-bold);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 140ms ease, color 140ms ease, border-color 140ms ease, opacity 140ms ease;
+    opacity: 0.6;
+  }
+  section.manage-data ul.snapshot-list li:hover .delete-btn,
+  section.manage-data ul.snapshot-list li:focus-within .delete-btn,
+  section.manage-data ul.snapshot-list .delete-btn:focus-visible { opacity: 1; }
+  section.manage-data ul.snapshot-list .delete-btn:hover {
+    background: var(--color-orange);
+    border-color: var(--color-orange);
+    color: var(--color-white);
+  }
+  section.manage-data ul.snapshot-list .delete-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: transparent;
+    color: var(--color-orange);
+    border-color: var(--border-gray);
+  }
+  section.manage-data ul.snapshot-list .empty {
+    color: var(--color-muted);
+    text-align: center;
+    padding: 32px 0;
+    font-size: 13px;
+  }
+  /* ponytail: warning row sits inside ul.snapshot-list (which does NOT
+  carry .list), so the .list li:hover selector does not apply. Hover bg
+  instead comes from the more-specific section.manage-data ul.snapshot-list
+  li:hover rule below; the warning-row itself only overrides display /
+  color / font / padding so it reads as text rather than as a row. */
+  section.manage-data ul.snapshot-list li.warning-row {
+    display: block;
+    color: var(--color-orange);
+    font-size: 12px;
+    text-align: left;
+    line-height: 1.55;
+    padding: 10px 14px;
+  }
+  section.manage-data ul.snapshot-list li.warning-row code {
+    color: var(--color-primary);
+    background: var(--bg-primary);
+    padding: 1px 6px;
+    border-radius: var(--rounded-small);
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    font-size: 11px;
+  }
+  /* ponytail: disclosure widget mirrors .disabled-section's chevron-
+  circle toggle. Chevron SVG rotates 180deg on data-collapsed="false";
+  the section's body slides via max-height + opacity for a smooth
+  open/close. ease-out feels like a curtain settling into place. */
+  section.manage-data .disclosure-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: var(--color-orange);
+    color: var(--color-white);
+    border: 0;
+    cursor: pointer;
+    padding: 0;
+    margin: 4px 0 10px;
+    transition: background 160ms ease, transform 160ms ease;
+  }
+  section.manage-data .disclosure-toggle:hover { background: #e14e22; }
+  section.manage-data .disclosure-toggle:focus-visible {
+    outline: 2px solid var(--color-orange);
+    outline-offset: 3px;
+  }
+  section.manage-data .disclosure-toggle svg { transition: transform 220ms ease-out; }
+  section.manage-data[data-collapsed="false"] .disclosure-toggle svg { transform: rotate(180deg); }
+  /* ponytail: smooth dropdown -- animate max-height + opacity instead
+  of display:none. Caps at 5000px (~100 rows of the snap-list at ~50px
+  per row; comfortably above any realistic inventory). long ease-out
+  plus opacity together feels like a curtain lowering rather than a snap. */
+  section.manage-data .snapshot-body {
+    max-height: 5000px;
+    opacity: 1;
+    overflow: hidden;
+    transition: max-height 360ms ease-out, opacity 220ms ease-out;
+  }
+  section.manage-data[data-collapsed="true"] .snapshot-body {
+    max-height: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+  /* ponytail: same color tokens as .import-status.{ok,err} for visual
+  continuity -- success = green, error = orange. Keeps the two halves
+  of the page (add, manage) feeling like one product. */
+  .manage-status {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--color-muted);
+    min-height: 1em;
+    line-height: 1.5;
+  }
+  .manage-status.ok { color: var(--color-inspire); font-weight: var(--font-medium); }
+  .manage-status.err { color: var(--color-orange); font-weight: var(--font-medium); }
 </style>
 </head>
 <body>
@@ -586,7 +838,7 @@
   <header class="top">
     <div class="brand">
       <div class="eyebrow">Instagram · Follower report</div>
-      <h1>Follower report</h1>
+      <h1>Follower Report</h1>
     </div>
     <div class="meta">
       <span class="pill dark"   id="snapshot-info">—</span>
@@ -607,6 +859,39 @@
       <input class="search" id="dfmb-search" placeholder="Filter usernames…" autocomplete="off">
       <ul class="list" id="dfmb-list"></ul>
     </article>
+  </section>
+
+  <!-- ponytail: full-width disclosure section between the NFB/DFMB split and
+  the disabled-section. Shows people in the latest fold_pair's
+  unilateral_unfollowed set -- former followers I never followed back.
+  Hidden when weeks is empty (<2 snapshots) or the latest fold_pair's
+  unilateral_unfollowed is empty (no clean losses to surface). Mirrors the
+  disabled-section / manage-data disclosure widget so all three lower
+  panels share the same expand/collapse interaction. -->
+  <section id="unilateral-section" class="unilateral-section" hidden data-collapsed="true">
+    <h2>
+      People who Unfollowed me that I never followed
+      <span class="count" id="unilateral-count">0</span>
+    </h2>
+    <button class="disclosure-toggle" id="unilateral-toggle" type="button"
+            aria-expanded="false" aria-controls="unilateral-body"
+            aria-label="Show people who Unfollowed me that I never followed">
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"
+           fill="none" stroke="currentColor" stroke-width="2.4"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 9l6 6 6-6"/>
+      </svg>
+    </button>
+    <div class="unilateral-body" id="unilateral-body">
+      <p class="explainer">
+        People who followed you in any past snapshot but are no longer
+        following you in the latest snapshot, and whom you never followed
+        back. These are pure unilateral unfollows — people who left you
+        without a mutual connection.
+      </p>
+      <input class="search" id="unilateral-search" placeholder="Filter usernames…" autocomplete="off">
+      <ul class="list" id="unilateral-list"></ul>
+    </div>
   </section>
 
   <section id="disabled-section" class="disabled-section" hidden data-collapsed="true">
@@ -631,6 +916,35 @@
       </p>
       <input class="search" id="disabled-search" placeholder="Filter usernames…" autocomplete="off">
       <ul class="list" id="disabled-list"></ul>
+    </div>
+  </section>
+
+  <!-- ponytail: mirrors .disabled-section disclosure widget -- chevron-up
+  circle expands .snapshot-body via max-height + opacity so the open
+  and close feels like a smooth curtain. Hidden behind data-collapsed
+  by default so the page lands with stats panels prominent and the
+  inventory is opt-in. Whole section is also `hidden`-attribute when
+  data/ is empty so first-launch users get a clean stats-only view. -->
+  <section class="manage-data" id="manage-data-section" hidden data-collapsed="true">
+    <h2>Saved snapshots</h2>
+    <button class="disclosure-toggle" id="manage-toggle" type="button"
+            aria-expanded="false" aria-controls="snapshot-body"
+            aria-label="Show saved snapshots">
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"
+           fill="none" stroke="currentColor" stroke-width="2.4"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 9l6 6 6-6"/>
+      </svg>
+    </button>
+    <div class="snapshot-body" id="snapshot-body">
+      <p class="explainer">
+        Every snapshot you've imported, oldest first. Click
+        <strong>Delete</strong> on a row to permanently remove that
+        snapshot from <code>data/&lt;date&gt;/</code>; the report
+        refreshes automatically. <em>This cannot be undone.</em>
+      </p>
+      <ul class="snapshot-list" id="snapshot-list"></ul>
+      <div id="manage-status" class="manage-status" role="status" aria-live="polite"></div>
     </div>
   </section>
 
@@ -676,6 +990,7 @@
     <code>python run.py [port]</code>. Add <code>--check-disabled</code> to merge
     handles whose Instagram page can't be loaded into the disabled panel. The
     report always shows the most recent snapshot — read-only.
+    <br><span id="build-info" style="color:var(--color-muted); font-size:11px;">v2</span>
   </footer>
 </div>
 
@@ -686,7 +1001,7 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   data: null,
-  filters: { nfb: "", dfmb: "", disabled: "" },
+  filters: { nfb: "", dfmb: "", disabled: "", unilateral: "" },
 };
 
 function latestSnapshot() {
@@ -809,6 +1124,50 @@ function renderDisabledPanel(s) {
   renderPanel("disabled-list", "disabled-count", list, list.length, "disabled", { flagButton: "remove" });
 }
 
+// ponytail: mirror of NFB/DFMB but with data from the GLOBAL
+// unilateral_unfollowed list (state.data.unilateral_unfollowed) computed
+// across ALL snapshots, not just the latest pair. This catches people who
+// unfollowed long ago and were never followed back. Falls back to the
+// legacy weeks[-1].unilateral_unfollowed for older report.json files.
+function renderUnilateralPanel(data) {
+  const items = data?.unilateral_unfollowed || data?.weeks?.at(-1)?.unilateral_unfollowed || [];
+  const hasSnapshots = (data?.snapshots?.length || 0) >= 2;
+  const section = $("unilateral-section");
+  section.hidden = !hasSnapshots;
+  if (!hasSnapshots) {
+    $("unilateral-list").innerHTML = "";
+    return;
+  }
+  $("unilateral-count").textContent = items.length;
+  if (!items.length) {
+    const list = $("unilateral-list");
+    list.innerHTML = "";
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "No one has unfollowed you without you following them back yet.";
+    list.appendChild(li);
+    return;
+  }
+  renderPanel("unilateral-list", "unilateral-count", items, items.length, "unilateral", { flagButton: true });
+}
+
+// ponytail: same disclosure widget for the unilateral section. Defaults to
+// collapsed so the page lands with stats + NFB/DFMB prominent.
+let _unilateralDisclosureWired = false;
+function wireUnilateralDisclosure() {
+  if (_unilateralDisclosureWired) return;
+  _unilateralDisclosureWired = true;
+  const toggle = $("unilateral-toggle");
+  const section = $("unilateral-section");
+  if (!toggle || !section) return;
+  toggle.addEventListener("click", () => {
+    const nextCollapsed = section.dataset.collapsed !== "true";
+    section.dataset.collapsed = nextCollapsed ? "true" : "false";
+    toggle.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+    toggle.setAttribute("aria-label", nextCollapsed ? "Show people who Unfollowed me that I never followed" : "Hide people who Unfollowed me that I never followed");
+  });
+}
+
 function renderHeader(s) {
   // ponytail: render() guards on null s above, so this is always reached
   // with a valid snapshot. Initial pill HTML stays at "—" until the first
@@ -834,16 +1193,22 @@ async function toggleFlag(btn, username, action) {
       throw new Error(`HTTP ${r.status}: ${t || "flag failed"}`);
     }
     const s = latestSnapshot();
+    if (!s) throw new Error("no snapshot loaded");
+    const unilateralSource = state.data.unilateral_unfollowed || state.data.weeks?.at(-1)?.unilateral_unfollowed || [];
     const rec =
       (s.dont_follow_me_back || []).find((x) => x.username === username) ||
       (s.not_followed_back  || []).find((x) => x.username === username) ||
-      (s.disabled_accounts  || []).find((x) => x.username === username);
+      (s.disabled_accounts  || []).find((x) => x.username === username) ||
+      unilateralSource.find((x) => x.username === username);
     if (!rec) throw new Error("row vanished from client state");
     if (action === "add") {
       for (const k of ["not_followed_back", "dont_follow_me_back"]) {
         s[k] = (s[k] || []).filter((x) => x.username !== username);
       }
       s.disabled_accounts = (s.disabled_accounts || []).filter((x) => x.username !== username);
+      if (state.data.unilateral_unfollowed) {
+        state.data.unilateral_unfollowed = state.data.unilateral_unfollowed.filter((x) => x.username !== username);
+      }
       s.disabled_accounts.push(rec);
       // ponytail: open the disclosure so the user sees the move immediately.
       // Even if section.hidden was still true when we got here (e.g. this was
@@ -915,7 +1280,217 @@ function wireDisclosure() {
   });
 }
 
+// ponytail: same disclosure widget for the Manage snapshots section.
+// Defaults to collapsed so the page lands with stats + NFB/DFMB
+// prominent; chevron-click drills into the inventory. Cap of
+// aria-label follows the disabled-section pattern -- "Show X" /
+// "Hide X" toggles in lockstep with aria-expanded for screen readers.
+let _manageDisclosureWired = false;
+function wireManageDisclosure() {
+  if (_manageDisclosureWired) return;
+  _manageDisclosureWired = true;
+  const toggle = $("manage-toggle");
+  const section = $("manage-data-section");
+  if (!toggle || !section) return;
+  toggle.addEventListener("click", () => {
+    const nextCollapsed = section.dataset.collapsed !== "true";
+    section.dataset.collapsed = nextCollapsed ? "true" : "false";
+    toggle.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+    toggle.setAttribute("aria-label", nextCollapsed ? "Show saved snapshots" : "Hide saved snapshots");
+  });
+}
+
+async function loadSnapshots() {
+  const r = await fetch("/snapshots", { cache: "no-store" });
+  if (!r.ok) throw new Error("failed to load snapshots");
+  return await r.json();
+}
+
+function renderSnapshots(items, warnings) {
+  const section = $("manage-data-section");
+  const list = $("snapshot-list");
+  list.innerHTML = "";
+  // ponytail: warnings is a parallel array of folder names that aren't
+  // valid MM-DD-YYYY -- surfaced so GUI users get the same diagnostic
+  // run_analyze prints to stderr in CLI mode. Reviewer-caught: silent
+  // skip left GUI users guessing why their hand-typed folder wasn't
+  // listed. Section stays visible if EITHER valid snapshots exist OR
+  // some warnings do -- a "nothing usable but here's what we found"
+  // state is more informative than just hiding the panel.
+  const warns = warnings || [];
+  const haveSnapshots = !!(items && items.length);
+  const haveWarnings = warns.length > 0;
+  if (!haveSnapshots && !haveWarnings) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  if (haveWarnings) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.className = "warning-row";
+    const joined = warns.map(w => `<code>${w}</code>`).join(", ");
+    li.innerHTML = `<strong>Heads up:</strong> ${warns.length} folder${warns.length === 1 ? "" : "s"} in <code>data/</code> ${warns.length === 1 ? "isn't" : "aren't"} a valid snapshot date (skipped): ${joined}. Rename to <code>MM-DD-YYYY</code> or remove from <code>data/</code>.`;
+    list.appendChild(li);
+  }
+  if (!haveSnapshots) return;
+  items.forEach((s) => {
+    const li = document.createElement("li");
+    const info = document.createElement("div");
+    info.className = "snap-info";
+    const dateEl = document.createElement("div");
+    dateEl.className = "snap-date";
+    dateEl.textContent = s.date;
+    const meta = document.createElement("div");
+    meta.className = "snap-meta";
+    // ponytail: tabular-nums on the <b> counts so 1,234 vs 12,034 aligns
+    // vertically when the list stacks; otherwise the eye scans left edge
+    // for digits and irregular widths cause a jittery mental read.
+    const f = (s.followers || 0).toLocaleString();
+    const g = (s.following || 0).toLocaleString();
+    let ago = "";
+    if (s.imported_at) {
+      const ms = Date.now() - new Date(s.imported_at).getTime();
+      if (ms > 0) ago = fmtAgo(s.imported_at);
+    }
+    meta.innerHTML = `<b>${f}</b> followers \u00b7 <b>${g}</b> following \u00b7 imported <span title="${s.imported_at || ""}">${ago || "\u2014"}</span>`;
+    info.appendChild(dateEl);
+    info.appendChild(meta);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "delete-btn";
+    btn.textContent = "Delete";
+    btn.dataset.date = s.date;
+    btn.setAttribute("aria-label", `Delete snapshot ${s.date}`);
+    btn.title = "Permanently remove the " + s.date + " snapshot from your saved data";
+    li.appendChild(info);
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+}
+
+async function refreshSnapshots() {
+  // ponytail: helper that re-hits /snapshots and re-renders the manage
+  // list. Errors are LOGGED so callers can decide whether to surface
+  // them on a status line; this function itself never throws so it
+  // can't break a caller that already considered refresh a best-effort
+  // operation. Reviewer caught the earlier swallow-the-error-and-keep-
+  // stale-row pattern: the wireSnapshots delete-success branch now
+  // wraps both report + snapshot refresh in a tagged try/catch so the
+  // status line honestly reflects actual state instead of "ok" with a
+  // still-present row.
+  try {
+    const data = await loadSnapshots();
+    renderSnapshots(data.snapshots || [], data.warnings || []);
+  } catch (e) {
+    console.error("snapshots refresh failed:", e);
+  }
+}
+
+// ponytail: combined report.json + snapshot-list refresh so a delete
+// handler can await a single promise and surface a single honest
+// status-line message on partial failure. Render order: report first
+// (so panels repaint before the manage list, so the user sees the
+// new stats reflecting current disk state immediately).
+async function refreshAfterMutation() {
+  const rr = await fetch("/dist/report.json?v=" + Date.now(), { cache: "no-store" });
+  if (!rr.ok) throw new Error("failed to refresh report.json: HTTP " + rr.status);
+  state.data = await rr.json();
+  render();
+  const sr = await fetch("/snapshots", { cache: "no-store" });
+  if (!sr.ok) throw new Error("failed to refresh snapshot list: HTTP " + sr.status);
+  const sd = await sr.json();
+  renderSnapshots(sd.snapshots || [], sd.warnings || []);
+}
+
+let _snapshotsWired = false;
+function wireSnapshots() {
+  if (_snapshotsWired) return;
+  _snapshotsWired = true;
+  const status = $("manage-status");
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button.delete-btn");
+    if (!btn || btn.disabled) return;
+    e.preventDefault();
+    const date = btn.dataset.date;
+    if (!date) return;
+    // ponytail: read the current item count once so the confirm message
+    // can branch on "is this the last one" -- the user gets a stronger
+    // warning before being one click away from an empty dataset.
+    const totalBtns = $("snapshot-list").querySelectorAll("button.delete-btn").length;
+    let msg;
+    if (totalBtns <= 1) {
+      msg = `Delete ${date}?\n\nThis is your only saved snapshot. Your saved data will become empty. ` +
+            `You can re-import it later from the Add data panel.`;
+    } else {
+      msg = `Delete snapshot ${date}?\n\nThis will permanently remove that snapshot's data. ` +
+            `Other snapshots are unaffected. This cannot be undone.`;
+    }
+    if (!window.confirm(msg)) return;
+    btn.disabled = true;
+    btn.textContent = "Deleting\u2026";
+    status.className = "manage-status";
+    status.textContent = "";
+    // ponytail: optimistic row removal -- rmtree already happened on
+    // the server before the response came back, so the row IS gone
+    // on disk. Drop the <li> regardless of whether post-fetch refresh
+    // succeeds. Reviewer-caught alternative: leaving the row until
+    // /snapshots refetched meant "Deleted X. Refreshing report..." +
+    // a still-present row was a contradictory state. The catch block
+    // below re-fetches the snapshot list on a 500 so the row returns
+    // (server side it never left -- we failed before rmtree).
+    const row = btn.closest("li");
+    const parent = row && row.parentNode;
+    if (row && parent) parent.removeChild(row);
+    try {
+      const r = await fetch("/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date }),
+      });
+      // ponytail: server sends plain-text send_error() bodies on 4xx/5xx;
+      // accept text-txt-only so the error messages the user sees match
+      // what _handle_import emits -- consistent errorformat across the page.
+      const txt = await r.text();
+      if (!r.ok) throw new Error(txt || `HTTP ${r.status}`);
+      status.className = "manage-status ok";
+      status.textContent = `Deleted ${date}. Refreshing report\u2026`;
+      try {
+        await refreshAfterMutation();
+      } catch (refreshErr) {
+        // ponytail: refresh failure is surfaced on manage-status instead
+        // of the optimistic-success state from two lines up; row is
+        // already gone (correct disk state), only state.data + panel
+        // renders might be stale. Honest message wins over cheerful "ok".
+        status.className = "manage-status err";
+        status.textContent = `Deleted ${date}, but page refresh failed: ${refreshErr.message}`;
+      }
+    } catch (err) {
+      status.className = "manage-status err";
+      status.textContent = `Delete failed: ${err.message}`;
+      // ponytail: server side the folder is still here (we never got
+      // to the rmtree branch), so we optimistically removed a row
+      // whose data the disk still contains. Re-fetch /snapshots so
+      // the row reappears and the snapshot panel returns to truth.
+      try {
+        const sr = await fetch("/snapshots", { cache: "no-store" });
+        if (!sr.ok) return;
+        const sd = await sr.json();
+        renderSnapshots(sd.snapshots || [], sd.warnings || []);
+      } catch (_) { /* best-effort */ }
+    }
+  });
+}
+
 function render() {
+  // ponytail: refresh the unilateral panel FIRST -- it depends only
+  // on state.data directly (not the latest snapshot), so it can survive
+  // a null latestSnapshot. Without this hoist the early-return below
+  // would skip it on null (e.g. after delete-last leaves an empty
+  // stub), letting stale <li> rows + section.hidden=false linger in
+  // the DOM. renderUnilateralPanel()'s `list.innerHTML = ""` clears
+  // the DOM unconditionally before deciding to hide or repaint.
+  renderUnilateralPanel(state.data);
   const s = latestSnapshot();
   if (!s) return;
   $("generated").textContent = fmtAgo(state.data.generated_at);
@@ -941,6 +1516,7 @@ function wireSearch() {
   wire("nfb-search",       "nfb");
   wire("dfmb-search",      "dfmb");
   wire("disabled-search",  "disabled");
+  wire("unilateral-search", "unilateral");
 }
 
 // ponytail: cache-bust via Date.now() on the report URL so re-running python run.py reflects on refresh.
@@ -951,8 +1527,23 @@ async function load() {
   wireSearch();
   wireFlagButtons();
   wireDisclosure();
+  wireUnilateralDisclosure();
+  wireManageDisclosure();
   wireImport();
+  wireSnapshots();
   render();
+  // ponytail: refresh snapshot inventory alongside the report. Errors
+  // are logged but NOT raised to the page-load .catch -- /snapshots
+  // failing should leave the manage section hidden (graceful
+  // degradation) without blocking the report panel rendering.
+  try {
+    const sr = await fetch("/snapshots", { cache: "no-store" });
+    if (!sr.ok) throw new Error("failed to load snapshots: HTTP " + sr.status);
+    const sd = await sr.json();
+    renderSnapshots(sd.snapshots || [], sd.warnings || []);
+  } catch (e) {
+    console.error("snapshots load failed:", e);
+  }
 }
 
 // ponytail: only digits survive, then dashes slot in after positions 2 and 5.

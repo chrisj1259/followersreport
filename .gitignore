@@ -41,3 +41,16 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Build-pipeline artifacts for the Windows installer.
+# redist/  -- WebView2 evergreen bootstrapper (~80MB), downloaded by build.py
+#             on first build and cached thereafter.
+# Output/  -- Inno Setup's compiled installer output (the file you ship).
+# build/   -- PyInstaller temporary build output.
+redist/
+Output/
+build/
+
+# Runtime / accidental files.
+server.log
+nul
