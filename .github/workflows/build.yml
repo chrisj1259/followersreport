@@ -54,6 +54,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
+      actions: read
 
     steps:
       - name: Checkout repository
