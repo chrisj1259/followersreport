@@ -1,5 +1,7 @@
 # Instagram Follower Report
 
+![Build Windows Installer](https://github.com/chrisj1259/removedfollowers/actions/workflows/build.yml/badge.svg)
+
 A local-first Windows desktop app (and CLI) that reads your Instagram data export and shows you who's unfollowed you, who you don't follow back, and who you share mutual follows with. Runs entirely on your machine; nothing is uploaded.
 
 ## What you get
