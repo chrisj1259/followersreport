@@ -5,7 +5,7 @@
 ;   2. pyinstaller build.spec           -> dist/InstagramFollowerReport/
 ;   3. Install Inno Setup 6.x (https://jrsoftware.org/isdl.php) -- free, ~5MB.
 ;   4. Open installer.iss in Inno Setup Compiler, Build > Compile.
-;   5. Output/InstagramFollowerReport-Setup-v1.0.exe is the file you ship.
+;   5. Output/InstagramFollowerReport-Setup-v<version>.exe is the file you ship.
 ;
 ; What it does at install time:
 ;   * Program files (read-only) go to %PROGRAMFILES%\InstagramFollowerReport.
@@ -23,13 +23,17 @@
 ; Evergreen runtime is unusual -- it can land in either hive depending on how
 ; the user (or their IT shop) originally installed Edge.
 
+#ifndef AppVersion
+  #define AppVersion "0.0.0-dev"
+#endif
+
 [Setup]
 AppName=Instagram Follower Report
-AppVersion=1.0
+AppVersion={#AppVersion}
 AppPublisher=Local-only
 DefaultDirName={autopf}\InstagramFollowerReport
 DefaultGroupName=Instagram Follower Report
-OutputBaseFilename=InstagramFollowerReport-Setup-v1.0
+OutputBaseFilename=InstagramFollowerReport-Setup-v{#AppVersion}
 SetupIconFile=icon.ico
 Compression=lzma2
 SolidCompression=yes
@@ -75,6 +79,10 @@ Filename: "{app}\InstagramFollowerReport.exe"; Description: "Launch Instagram Fo
 [Icons]
 Name: "{group}\Instagram Follower Report"; Filename: "{app}\InstagramFollowerReport.exe"
 Name: "{commondesktop}\Instagram Follower Report"; Filename: "{app}\InstagramFollowerReport.exe"; Tasks: desktopicon
+
+[Registry]
+; The app reads this instead of guessing from files, so it only offers a newer release.
+Root: HKCU; Subkey: "Software\InstagramFollowerReport"; ValueType: string; ValueName: "Version"; ValueData: "{#AppVersion}"; Flags: uninsdeletevalue
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

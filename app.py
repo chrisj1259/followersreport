@@ -20,12 +20,17 @@ Ponytail: minimum changes to run.py -- ONE small global-mutator helper.
 """
 from __future__ import annotations
 
-import ctypes
 import argparse
+import ctypes
+import json
 import os
+import re
 import shutil
+import subprocess
 import sys
+import tempfile
 import threading
+import urllib.request
 from pathlib import Path
 
 import run  # the existing analyze.py + serve.py layer (analyze + FlagHandler + etc.)
@@ -58,6 +63,93 @@ else:
     APPDATA = Path.home() / ".local" / "share"
 
 DATA_ROOT = APPDATA / "InstagramFollowerReport"
+UPDATE_API = "https://api.github.com/repos/chrisj1259/removedfollowers/releases/latest"
+UPDATE_ASSET_PREFIX = "InstagramFollowerReport-Setup-v"
+
+
+def _version_key(version: str) -> tuple[int, int, int] | None:
+    """Return a comparable stable release version, or None for anything else."""
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", version.strip())
+    return tuple(map(int, match.groups())) if match else None  # type: ignore[return-value]
+
+
+def _installed_version() -> tuple[int, int, int] | None:
+    """Read the version written by the Inno Setup installer."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\InstagramFollowerReport") as key:
+            version, _ = winreg.QueryValueEx(key, "Version")
+        return _version_key(str(version))
+    except OSError:
+        return None
+
+
+def _latest_update() -> tuple[str, str] | None:
+    """Return (version, installer URL) only when GitHub has a newer stable release."""
+    current = _installed_version()
+    if not getattr(sys, "frozen", False) or current is None:
+        return None
+    try:
+        request = urllib.request.Request(UPDATE_API, headers={"User-Agent": "InstagramFollowerReport"})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            release = json.load(response)
+        if not isinstance(release, dict):
+            return None
+        if release.get("draft") or release.get("prerelease"):
+            return None
+        version = str(release.get("tag_name", "")).removeprefix("v")
+        if (latest := _version_key(version)) is None or latest <= current:
+            return None
+        expected_name = f"{UPDATE_ASSET_PREFIX}{version}.exe"
+        assets = release.get("assets", [])
+        if not isinstance(assets, list):
+            return None
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            url = asset.get("browser_download_url", "")
+            if asset.get("name") == expected_name and isinstance(url, str) and url.startswith("https://github.com/"):
+                return version, url
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass  # Offline or a bad response must never prevent a local app launch.
+    return None
+
+
+def _download_installer(version: str, url: str) -> Path:
+    """Download a selected release into the user's temp folder."""
+    target = Path(tempfile.gettempdir()) / f"{UPDATE_ASSET_PREFIX}{version}.exe"
+    temporary = target.with_suffix(".download")
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response, temporary.open("wb") as file:
+            shutil.copyfileobj(response, file)
+        temporary.replace(target)
+        return target
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _start_available_update() -> bool:
+    """Ask once at startup, launch the selected installer, and report whether to exit."""
+    update = _latest_update()
+    if update is None:
+        return False
+    version, url = update
+    prompt = (
+        f"Version {version} is available. Download and install it now?\n\n"
+        "The app will close while Windows installs the update. Your data is kept."
+    )
+    if ctypes.windll.user32.MessageBoxW(0, prompt, "Instagram Follower Report", 0x24) != 6:
+        return False
+    try:
+        installer = _download_installer(version, url)
+        subprocess.Popen([str(installer), "/SP-"])
+        return True
+    except OSError as e:
+        _show_error("Instagram Follower Report", f"Could not download the update.\n\n{e}")
+        return False
 
 
 # === Custom Handler =====================================================
@@ -112,8 +204,6 @@ def bootstrap_data_root() -> None:
     (DATA_ROOT / "data").mkdir(exist_ok=True)
     (DATA_ROOT / "dist").mkdir(exist_ok=True)
     flagged = DATA_ROOT / "disabledaccounts.json"
-    if not flagged.exists():
-        flagged.write_text("[]", encoding="utf-8")
 
     marker = DATA_ROOT / ".installed"
     if marker.exists():
@@ -176,6 +266,9 @@ def _auto_generate_report() -> None:
     safely on empty lists, so a stub is enough for the empty-state UI to
     render instead of the old 'Make sure you ran `python run.py` first'
     fallback message."""
+    if run._profiles_payload()["active_profile_id"] is None:
+        run._emit_stub_report()
+        return
     try:
         run.run_analyze(argparse.Namespace(check_disabled=False))
         return
@@ -210,13 +303,9 @@ def main() -> int:
             "Report from the Start Menu.",
         )
         return 1
-    # ponytail: only mutate the three globals run.py reads at module-level.
-    # The rest of run.py uses these names everywhere -- no kwargs to thread.
-    run._set_data_paths(
-        data_dir=DATA_ROOT / "data",
-        out_dir=DATA_ROOT / "dist",
-        disabled_file=DATA_ROOT / "disabledaccounts.json",
-    )
+    if _start_available_update():
+        return 0
+    run.enable_profile_mode(DATA_ROOT, DATA_ROOT / "dist")
 
     # ponytail: windowed entry point generates dist/report.json itself so
     # the user doesn't have to run `python run.py` separately before the

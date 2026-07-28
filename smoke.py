@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -85,6 +86,16 @@ port = httpd.server_address[1]
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 time.sleep(0.3)
 try:
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/profiles", timeout=5) as r:
+        cli_profiles = json.loads(r.read())
+    assert cli_profiles == {
+        "profile_mode": False,
+        "active_profile_id": None,
+        "profiles": [],
+        "legacy_needs_username": False,
+    }, cli_profiles
+    print("T4a CLI profile compatibility OK: profile mode disabled")
+
     boundary = "----ifr"
     body = (
         f"--{boundary}\r\n"
@@ -201,6 +212,146 @@ try:
 finally:
     httpd.shutdown()
     httpd.server_close()
+
+
+# === T8: desktop profiles isolate snapshots, reports, and flags ===
+def request_json(port, path, payload=None, expected=200):
+    data = None if payload is None else json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", data=data,
+        headers={"Content-Type": "application/json"} if data else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            assert response.status == expected, (response.status, expected)
+            return json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        assert error.code == expected, (error.code, expected, error.read())
+        return None
+
+
+def import_snapshot(port, date, follower, following):
+    boundary = "----ifr-profile"
+    body = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"date\"\r\n\r\n{date}\r\n"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"followers\"; filename=\"followers_1.json\"\r\n"
+        f"Content-Type: application/json\r\n\r\n{json.dumps([ig(follower)])}\r\n"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"following\"; filename=\"following.json\"\r\n"
+        f"Content-Type: application/json\r\n\r\n{json.dumps([ig(following)])}\r\n--{boundary}--\r\n"
+    ).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/import", data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as response:
+        result = json.loads(response.read())
+    assert result["ok"] is True, result
+
+
+desktop = sb / "desktop"
+run.enable_profile_mode(desktop, desktop / "dist")
+profile_httpd = run._run_server(0, run.FlagHandler)
+profile_port = profile_httpd.server_address[1]
+threading.Thread(target=profile_httpd.serve_forever, daemon=True).start()
+try:
+    initial = request_json(profile_port, "/profiles")
+    assert initial["profile_mode"] is True and initial["active_profile_id"] is None, initial
+    assert initial["profiles"] == [] and initial["legacy_needs_username"] is False, initial
+    request_json(profile_port, "/snapshots", expected=409)
+    for path in ("/import", "/delete", "/flag"):
+        request_json(profile_port, path, {}, expected=409)
+
+    alpha = request_json(profile_port, "/profiles", {"action": "create", "name": " @Alpha.One "})
+    alpha_id = alpha["active_profile_id"]
+    assert alpha["profiles"] == [{"id": alpha_id, "name": "alpha.one"}], alpha
+    request_json(profile_port, "/profiles", {"action": "create", "name": ""}, expected=400)
+    request_json(profile_port, "/profiles", {"action": "create", "name": "../../escape"}, expected=400)
+    request_json(profile_port, "/profiles", {"action": "create", "name": "ALPHA.ONE"}, expected=400)
+    request_json(profile_port, "/profiles", {"action": "select", "profile_id": "../unknown"}, expected=404)
+    import_snapshot(profile_port, date_str, "alpha_follower", "alpha_following")
+    request_json(profile_port, "/flag", {"username": "alpha_disabled", "action": "add"})
+
+    beta = request_json(profile_port, "/profiles", {"action": "create", "name": "beta_two"})
+    beta_id = beta["active_profile_id"]
+    import_snapshot(profile_port, date_str, "beta_follower", "beta_following")
+    request_json(profile_port, "/flag", {"username": "beta_disabled", "action": "add"})
+
+    request_json(profile_port, "/profiles", {"action": "select", "profile_id": alpha_id})
+    alpha_report = json.loads((desktop / "dist" / "report.json").read_text())
+    assert alpha_report["snapshots"][0]["not_followed_back"][0]["username"] == "alpha_follower"
+    assert json.loads((desktop / "profiles" / alpha_id / "disabledaccounts.json").read_text()) == ["alpha_disabled"]
+    request_json(profile_port, "/flag", {"username": "alpha_disabled", "action": "remove"})
+    assert json.loads((desktop / "profiles" / alpha_id / "disabledaccounts.json").read_text()) == []
+    assert request_json(profile_port, "/snapshots")["snapshots"][0]["date"] == date_str
+    request_json(profile_port, "/delete", {"date": date_str})
+    assert json.loads((desktop / "dist" / "report.json").read_text())["snapshots"] == []
+
+    request_json(profile_port, "/profiles", {"action": "select", "profile_id": beta_id})
+    beta_report = json.loads((desktop / "dist" / "report.json").read_text())
+    assert beta_report["snapshots"][0]["not_followed_back"][0]["username"] == "beta_follower"
+    assert json.loads((desktop / "profiles" / beta_id / "disabledaccounts.json").read_text()) == ["beta_disabled"]
+    assert (desktop / "profiles" / beta_id / "data" / date_str).is_dir()
+    run.enable_profile_mode(desktop, desktop / "dist")
+    persisted = request_json(profile_port, "/profiles")
+    assert persisted["active_profile_id"] == beta_id, persisted
+    print("T8 desktop profiles OK: validation, 409 guard, import/delete/report/flag isolation, persistence")
+finally:
+    profile_httpd.shutdown()
+    profile_httpd.server_close()
+
+
+# === T9: legacy migration copies safely, prefers root flags, and is idempotent ===
+def seed_legacy(root, nested_flags=False):
+    folder = root / "data" / date_str
+    folder.mkdir(parents=True)
+    (folder / "followers_1.json").write_text(json.dumps([ig("legacy_follower")]))
+    (folder / "following.json").write_text(json.dumps([ig("legacy_following")]))
+    flag_file = root / "data" / "disabledaccounts.json" if nested_flags else root / "disabledaccounts.json"
+    flag_file.write_text(json.dumps(["legacy_disabled"]))
+    return flag_file
+
+
+legacy = sb / "legacy"
+legacy_flag = seed_legacy(legacy)
+(legacy / "data" / "disabledaccounts.json").write_text(json.dumps(["nested_must_lose"]))
+run.enable_profile_mode(legacy, legacy / "dist")
+assert run._profiles_payload()["legacy_needs_username"] is True
+migrated = run._create_profile("Legacy.Owner", migrate_legacy=True)
+migrated_id = migrated["active_profile_id"]
+assert (legacy / "data" / date_str).is_dir() and legacy_flag.is_file(), "legacy rollback files changed"
+assert json.loads((legacy / "profiles" / migrated_id / "disabledaccounts.json").read_text()) == ["legacy_disabled"]
+run.enable_profile_mode(legacy, legacy / "dist")
+assert run._profiles_payload()["active_profile_id"] == migrated_id
+try:
+    run._create_profile("again", migrate_legacy=True)
+    raise AssertionError("completed migration reran")
+except ValueError:
+    pass
+
+nested = sb / "nested-legacy"
+seed_legacy(nested, nested_flags=True)
+run.enable_profile_mode(nested, nested / "dist")
+nested_result = run._create_profile("nested_owner", migrate_legacy=True)
+nested_id = nested_result["active_profile_id"]
+assert json.loads((nested / "profiles" / nested_id / "disabledaccounts.json").read_text()) == ["legacy_disabled"]
+
+failed = sb / "failed-legacy"
+seed_legacy(failed)
+run.enable_profile_mode(failed, failed / "dist")
+real_copytree = run.shutil.copytree
+run.shutil.copytree = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("synthetic copy failure"))
+try:
+    try:
+        run._create_profile("failure_owner", migrate_legacy=True)
+        raise AssertionError("migration failure was swallowed")
+    except OSError:
+        pass
+finally:
+    run.shutil.copytree = real_copytree
+failed_manifest = json.loads((failed / "profiles.json").read_text())
+assert failed_manifest["profiles"] == [] and failed_manifest["migration_complete"] is False
+assert list((failed / "profiles").iterdir()) == [] and (failed / "data" / date_str).is_dir()
+print("T9 legacy migration OK: root/nested flags, originals retained, cleanup, idempotence")
 
 shutil.rmtree(sb, ignore_errors=True)
 print("SMOKE_TEST_OK")

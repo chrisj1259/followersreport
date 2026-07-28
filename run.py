@@ -58,6 +58,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import uuid
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -68,6 +69,9 @@ DATA = ROOT / "data"
 OUT = ROOT / "dist" / "report.json"
 DISABLED_FILE = DATA / "disabledaccounts.json"
 DEFAULT_PORT = 8000
+PROFILE_ROOT: Path | None = None
+PROFILE_MANIFEST: Path | None = None
+PROFILE_OUT_DIR: Path | None = None
 
 
 def _set_data_paths(*, data_dir: Path, out_dir: Path, disabled_file: Path) -> None:
@@ -92,6 +96,243 @@ def _set_data_paths(*, data_dir: Path, out_dir: Path, disabled_file: Path) -> No
     # SystemExit` doesn't catch ValueError so the in-app Import button
     # would silently 500 the user with files staged but no UI refresh.
     ROOT = out_dir.parent
+
+
+def _atomic_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _legacy_profile_data_exists(storage_root: Path) -> bool:
+    data = storage_root / "data"
+    if data.is_dir():
+        for child in data.iterdir():
+            if child.is_dir():
+                try:
+                    parse_folder_date(child.name)
+                    return True
+                except ValueError:
+                    pass
+    for flags in (storage_root / "disabledaccounts.json", data / "disabledaccounts.json"):
+        try:
+            raw = json.loads(flags.read_text(encoding="utf-8"))
+            if isinstance(raw, list) and raw:
+                return True
+        except (OSError, json.JSONDecodeError):
+            pass
+    return False
+
+
+def _read_profiles() -> dict:
+    if PROFILE_MANIFEST is None:
+        return {"schema_version": 1, "active_profile_id": None,
+                "migration_complete": True, "profiles": []}
+    try:
+        manifest = json.loads(PROFILE_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise OSError(f"could not read {PROFILE_MANIFEST}: {e}") from e
+    if (not isinstance(manifest, dict) or manifest.get("schema_version") != 1
+            or not isinstance(manifest.get("profiles"), list)):
+        raise OSError(f"unsupported or malformed profile manifest: {PROFILE_MANIFEST}")
+    for profile in manifest["profiles"]:
+        profile_id = profile.get("id") if isinstance(profile, dict) else None
+        try:
+            valid_id = (isinstance(profile_id, str) and len(profile_id) == 32
+                        and uuid.UUID(profile_id).hex == profile_id)
+        except ValueError:
+            valid_id = False
+        if not valid_id:
+            raise OSError(f"malformed profile id in {PROFILE_MANIFEST}")
+    return manifest
+
+
+def _profile_dir(profile_id: str) -> Path:
+    assert PROFILE_ROOT is not None
+    return PROFILE_ROOT / profile_id
+
+
+def _activate_profile(profile_id: str | None) -> None:
+    assert PROFILE_OUT_DIR is not None
+    if profile_id is None:
+        return
+    profile = _profile_dir(profile_id)
+    (profile / "data").mkdir(parents=True, exist_ok=True)
+    flags = profile / "disabledaccounts.json"
+    if not flags.exists():
+        flags.write_text("[]", encoding="utf-8")
+    _set_data_paths(data_dir=profile / "data", out_dir=PROFILE_OUT_DIR, disabled_file=flags)
+
+
+def enable_profile_mode(storage_root: Path, out_dir: Path) -> None:
+    """Enable desktop-only profile storage. CLI never calls this."""
+    global PROFILE_ROOT, PROFILE_MANIFEST, PROFILE_OUT_DIR
+    PROFILE_ROOT = storage_root / "profiles"
+    PROFILE_MANIFEST = storage_root / "profiles.json"
+    PROFILE_OUT_DIR = out_dir
+    PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
+    _set_data_paths(data_dir=PROFILE_ROOT, out_dir=out_dir,
+                    disabled_file=PROFILE_ROOT / ".inactive-disabledaccounts.json")
+    if not PROFILE_MANIFEST.exists():
+        legacy = _legacy_profile_data_exists(storage_root)
+        _atomic_json(PROFILE_MANIFEST, {
+            "schema_version": 1,
+            "active_profile_id": None,
+            "migration_complete": not legacy,
+            "profiles": [],
+        })
+    manifest = _read_profiles()
+    active = manifest.get("active_profile_id")
+    if any(p.get("id") == active for p in manifest["profiles"] if isinstance(p, dict)):
+        _activate_profile(active)
+
+
+def _profiles_payload() -> dict:
+    if PROFILE_MANIFEST is None:
+        return {"profile_mode": False, "active_profile_id": None, "profiles": [],
+                "legacy_needs_username": False}
+    manifest = _read_profiles()
+    active = manifest.get("active_profile_id")
+    if not any(p.get("id") == active for p in manifest["profiles"] if isinstance(p, dict)):
+        active = None
+    return {
+        "profile_mode": True,
+        "active_profile_id": active,
+        "profiles": manifest["profiles"],
+        "legacy_needs_username": not bool(manifest.get("migration_complete")),
+    }
+
+
+def _normalize_profile_name(value: object) -> str:
+    name = str(value or "").strip()
+    if name.startswith("@"):
+        name = name[1:]
+    name = name.lower()
+    if not re.fullmatch(r"[a-z0-9._]+", name):
+        raise ValueError("username must contain only letters, numbers, periods, and underscores")
+    return name
+
+
+def _refresh_active_report() -> None:
+    has_snapshot = False
+    if DATA.is_dir():
+        for child in DATA.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                parse_folder_date(child.name)
+                has_snapshot = True
+                break
+            except ValueError:
+                pass
+    if has_snapshot:
+        try:
+            run_analyze(argparse.Namespace(check_disabled=False))
+        except SystemExit as e:
+            raise OSError(f"could not analyze profile: {e}") from e
+    else:
+        _emit_stub_report()
+
+
+def _create_profile(name_value: object, migrate_legacy: bool = False) -> dict:
+    if PROFILE_MANIFEST is None or PROFILE_ROOT is None:
+        raise ValueError("profile mode is disabled")
+    name = _normalize_profile_name(name_value)
+    manifest = _read_profiles()
+    if any(str(p.get("name", "")).lower() == name for p in manifest["profiles"]):
+        raise ValueError("that username already exists")
+    needs_migration = not bool(manifest.get("migration_complete"))
+    if needs_migration and not migrate_legacy:
+        raise RuntimeError("legacy data needs a username before adding another account")
+    if migrate_legacy and not needs_migration:
+        raise ValueError("legacy data has already been migrated")
+
+    profile_id = uuid.uuid4().hex
+    target = _profile_dir(profile_id)
+    staging = PROFILE_ROOT / f".{profile_id}.tmp"
+    try:
+        data_target = staging / "data"
+        data_target.mkdir(parents=True)
+        if migrate_legacy:
+            legacy_data = PROFILE_ROOT.parent / "data"
+            if legacy_data.is_dir():
+                for child in legacy_data.iterdir():
+                    if not child.is_dir():
+                        continue
+                    try:
+                        parse_folder_date(child.name)
+                    except ValueError:
+                        continue
+                    shutil.copytree(child, data_target / child.name)
+        flags_target = staging / "disabledaccounts.json"
+        flags_source = PROFILE_ROOT.parent / "disabledaccounts.json"
+        nested_flags = PROFILE_ROOT.parent / "data" / "disabledaccounts.json"
+        if migrate_legacy and flags_source.is_file():
+            shutil.copy2(flags_source, flags_target)
+        elif migrate_legacy and nested_flags.is_file():
+            shutil.copy2(nested_flags, flags_target)
+        else:
+            flags_target.write_text("[]", encoding="utf-8")
+        os.replace(staging, target)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+
+    old_active = manifest.get("active_profile_id")
+    manifest["profiles"].append({"id": profile_id, "name": name})
+    manifest["active_profile_id"] = profile_id
+    if migrate_legacy:
+        manifest["migration_complete"] = True
+    try:
+        _activate_profile(profile_id)
+        _refresh_active_report()
+        _atomic_json(PROFILE_MANIFEST, manifest)
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        if old_active:
+            _activate_profile(old_active)
+            _refresh_active_report()
+        else:
+            _set_data_paths(data_dir=PROFILE_ROOT, out_dir=PROFILE_OUT_DIR,
+                            disabled_file=PROFILE_ROOT / ".inactive-disabledaccounts.json")
+            _emit_stub_report()
+        raise
+    return _profiles_payload()
+
+
+def _select_profile(profile_id: object) -> dict:
+    if PROFILE_MANIFEST is None:
+        raise ValueError("profile mode is disabled")
+    profile_id = str(profile_id or "")
+    manifest = _read_profiles()
+    if not any(p.get("id") == profile_id for p in manifest["profiles"] if isinstance(p, dict)):
+        raise KeyError("unknown profile")
+    old_active = manifest.get("active_profile_id")
+    _activate_profile(profile_id)
+    try:
+        _refresh_active_report()
+        manifest["active_profile_id"] = profile_id
+        _atomic_json(PROFILE_MANIFEST, manifest)
+    except Exception:
+        if old_active:
+            _activate_profile(old_active)
+            _refresh_active_report()
+        else:
+            _set_data_paths(data_dir=PROFILE_ROOT, out_dir=PROFILE_OUT_DIR,
+                            disabled_file=PROFILE_ROOT / ".inactive-disabledaccounts.json")
+            _emit_stub_report()
+        raise
+    return _profiles_payload()
 
 
 # ponytail: disabled-account sniff is heuristic — Instagram can change their
@@ -599,6 +840,11 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
     IMPORT_MAX_BYTES = 50_000_000  # ~50 MB; an IG export is JSON only, well under
 
     def do_POST(self) -> None:  # type: ignore[override]
+        if self.path == "/profiles":
+            self._handle_profiles()
+            return
+        if self.path in ("/flag", "/import", "/delete") and self._reject_without_profile():
+            return
         if self.path == "/flag":
             self._handle_flag()
         elif self.path == "/import":
@@ -616,7 +862,15 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         # inherited handler -- _SplitFlagHandler.app.py's translate_path
         # override still applies because Python resolves self.translate_path
         # dynamically at call time.
+        if self.path == "/profiles":
+            try:
+                self._send_json(200, _profiles_payload())
+            except OSError as e:
+                self.send_error(500, str(e))
+            return
         if self.path == "/snapshots":
+            if self._reject_without_profile():
+                return
             self._handle_list_snapshots()
             return
         super().do_GET()
@@ -636,6 +890,54 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _reject_without_profile(self) -> bool:
+        if PROFILE_MANIFEST is None:
+            return False
+        try:
+            active = _profiles_payload()["active_profile_id"]
+        except OSError as e:
+            self.send_error(500, str(e))
+            return True
+        if active:
+            return False
+        self._send_json(409, {"ok": False, "error": "select or create an account first"})
+        return True
+
+    def _handle_profiles(self) -> None:
+        if PROFILE_MANIFEST is None:
+            self._send_json(409, {"ok": False, "error": "profile mode is disabled"})
+            return
+        length = int(self.headers.get("Content-Length") or "0")
+        if length <= 0 or length > 4096:
+            self.send_error(400, "empty or oversized body")
+            return
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            action = str(body.get("action", "")).strip().lower()
+            if action == "create":
+                payload = _create_profile(body.get("name"), body.get("migrate_legacy") is True)
+            elif action == "select":
+                payload = _select_profile(body.get("profile_id"))
+            else:
+                self.send_error(400, "action must be 'create' or 'select'")
+                return
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.send_error(400, "bad json body")
+            return
+        except KeyError as e:
+            self.send_error(404, e.args[0])
+            return
+        except RuntimeError as e:
+            self.send_error(409, str(e))
+            return
+        except ValueError as e:
+            self.send_error(400, str(e))
+            return
+        except OSError as e:
+            self.send_error(500, f"profile operation failed: {e}")
+            return
+        self._send_json(200, {"ok": True, **payload})
 
     def _handle_flag(self) -> None:
         length = int(self.headers.get("Content-Length") or "0")

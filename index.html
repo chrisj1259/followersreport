@@ -116,6 +116,18 @@
   }
   .meta .pill.dark    { background: var(--color-primary); }
   .meta .pill.subtle  { background: var(--color-soft-muted); color: var(--color-muted-2); }
+  .profile-controls { display: inline-flex; align-items: center; gap: 8px; }
+  .profile-controls label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: var(--font-medium); }
+  .profile-controls select,
+  .profile-controls button { appearance: none; border: var(--border-normal) solid var(--border-gray); border-radius: var(--pill); background: var(--color-white); color: var(--color-primary); padding: 7px 12px; font: inherit; font-size: 12px; }
+  .profile-controls select { min-width: 150px; cursor: pointer; }
+  .profile-controls button { background: var(--color-primary); color: var(--color-white); border-color: var(--color-primary); cursor: pointer; }
+  .profile-controls select:focus-visible,
+  .profile-controls button:focus-visible { outline: 2px solid var(--color-orange); outline-offset: 2px; }
+  .profile-controls select:disabled,
+  .profile-controls button:disabled { opacity: 0.55; cursor: not-allowed; }
+  .profile-status { width: 100%; color: var(--color-muted); font-size: 12px; text-align: right; min-height: 1em; }
+  .profile-status.err { color: var(--color-orange); font-weight: var(--font-medium); }
 
 
   /* ---------- stats ---------- */
@@ -841,14 +853,23 @@
       <h1>Follower Report</h1>
     </div>
     <div class="meta">
+      <div class="profile-controls" id="profile-controls" hidden>
+        <label for="profile-select">Account
+          <select id="profile-select" aria-label="Instagram account"></select>
+        </label>
+        <button type="button" id="profile-add">Add account</button>
+      </div>
       <span class="pill dark"   id="snapshot-info">—</span>
       <span class="pill subtle" id="generated">Loading…</span>
+      <div id="profile-status" class="profile-status" role="status" aria-live="polite"></div>
     </div>
   </header>
 
+  <div class="empty-state" id="profile-empty" hidden></div>
+
   <section class="stats" id="stats"></section>
 
-  <section class="split">
+  <section class="split" id="relationship-panels">
     <article class="panel blue">
       <h2>People I don't follow back <span class="count" id="nfb-count">0</span></h2>
       <input class="search" id="nfb-search" placeholder="Filter usernames…" autocomplete="off">
@@ -1002,7 +1023,132 @@ const $ = (id) => document.getElementById(id);
 const state = {
   data: null,
   filters: { nfb: "", dfmb: "", disabled: "", unilateral: "" },
+  profile: { enabled: false, activeId: null, profiles: [], legacyNeedsUsername: false, busy: 0 },
 };
+
+function setProfileStatus(message = "", error = false) {
+  const el = $("profile-status");
+  el.textContent = message;
+  el.className = "profile-status" + (error ? " err" : "");
+}
+
+function setProfileBusy(busy) {
+  state.profile.busy = Math.max(0, state.profile.busy + (busy ? 1 : -1));
+  const disabled = state.profile.busy > 0;
+  $("profile-select").disabled = disabled;
+  $("profile-add").disabled = disabled;
+}
+
+function renderProfileControls() {
+  $("profile-controls").hidden = !state.profile.enabled;
+  if (!state.profile.enabled) return;
+  const select = $("profile-select");
+  select.innerHTML = "";
+  if (!state.profile.profiles.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No accounts yet";
+    select.appendChild(option);
+  }
+  for (const profile of state.profile.profiles) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = "@" + profile.name;
+    select.appendChild(option);
+  }
+  select.value = state.profile.activeId || "";
+  $("profile-add").textContent = state.profile.legacyNeedsUsername ? "Set account" : "Add account";
+  select.disabled = state.profile.busy > 0;
+  $("profile-add").disabled = state.profile.busy > 0;
+  const submit = $("import-form").querySelector('button[type="submit"]');
+  submit.disabled = !state.profile.activeId;
+}
+
+async function refreshProfiles() {
+  const r = await fetch("/profiles", { cache: "no-store" });
+  const text = await r.text();
+  if (!r.ok) throw new Error(text || `HTTP ${r.status}`);
+  const data = JSON.parse(text);
+  state.profile.enabled = !!data.profile_mode;
+  state.profile.activeId = data.active_profile_id || null;
+  state.profile.profiles = data.profiles || [];
+  state.profile.legacyNeedsUsername = !!data.legacy_needs_username;
+  renderProfileControls();
+  return data;
+}
+
+async function postProfile(body) {
+  const r = await fetch("/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(text || `HTTP ${r.status}`);
+  return text ? JSON.parse(text) : {};
+}
+
+function resetProfileView() {
+  state.data = null;
+  for (const key of Object.keys(state.filters)) state.filters[key] = "";
+  for (const id of ["nfb-search", "dfmb-search", "disabled-search", "unilateral-search"]) $(id).value = "";
+  for (const id of ["import-status", "manage-status"]) { $(id).textContent = ""; $(id).className = id; }
+  render();
+  renderSnapshots([], []);
+}
+
+async function selectProfile(profileId) {
+  if (!profileId || profileId === state.profile.activeId || state.profile.busy) return;
+  setProfileBusy(true);
+  setProfileStatus("Switching account…");
+  resetProfileView();
+  try {
+    await postProfile({ action: "select", profile_id: profileId });
+    await refreshProfiles();
+    await load(true);
+    setProfileStatus("");
+  } catch (e) {
+    setProfileStatus(`Could not switch account: ${e.message}`, true);
+    await refreshProfiles().catch(() => {});
+    resetProfileView();
+    if (state.profile.activeId) await load(true).catch(() => {});
+  } finally {
+    setProfileBusy(false);
+  }
+}
+
+async function createProfile(migrateLegacy = false) {
+  if (state.profile.busy) return;
+  const name = window.prompt(migrateLegacy
+    ? "Which Instagram username owns your existing saved data?"
+    : "Instagram username for the new account:");
+  if (name === null) {
+    setProfileStatus(migrateLegacy ? "Migration canceled. Click Set account when you are ready." : "Account creation canceled.", true);
+    return;
+  }
+  setProfileBusy(true);
+  setProfileStatus(migrateLegacy ? "Migrating saved data…" : "Creating account…");
+  resetProfileView();
+  try {
+    await postProfile({ action: "create", name, migrate_legacy: migrateLegacy });
+    await refreshProfiles();
+    await load(true);
+    setProfileStatus("");
+  } catch (e) {
+    setProfileStatus(`${migrateLegacy ? "Migration" : "Account creation"} failed: ${e.message}`, true);
+    await refreshProfiles().catch(() => {});
+  } finally {
+    setProfileBusy(false);
+  }
+}
+
+let _profilesWired = false;
+function wireProfiles() {
+  if (_profilesWired) return;
+  _profilesWired = true;
+  $("profile-select").addEventListener("change", (e) => selectProfile(e.target.value));
+  $("profile-add").addEventListener("click", () => createProfile(state.profile.legacyNeedsUsername));
+}
 
 function latestSnapshot() {
   if (!state.data || !state.data.snapshots.length) return null;
@@ -1118,6 +1264,8 @@ function renderDisabledPanel(s) {
   // ponytail: hide the panel entirely when there's nothing to show.
   if (list.length === 0) {
     section.hidden = true;
+    $("disabled-list").innerHTML = "";
+    $("disabled-count").textContent = "0";
     return;
   }
   section.hidden = false;
@@ -1179,6 +1327,7 @@ async function toggleFlag(btn, username, action) {
   // ponytail: disable the button for the duration of the POST so a fast double-
   // click can't fire two writes (last-one-wins on the server, but the UI
   // ordering matters — both reads of client state below mutate arrays in place).
+  setProfileBusy(true);
   btn.disabled = true;
   const original = btn.textContent;
   btn.textContent = action === "add" ? "Flagging…" : "Removing…";
@@ -1243,6 +1392,8 @@ async function toggleFlag(btn, username, action) {
     btn.textContent = original;
     console.error("flag POST failed:", e);
     alert(`Could not ${action === "add" ? "flag" : "unflag"} @${username}: ${e.message}`);
+  } finally {
+    setProfileBusy(false);
   }
 }
 
@@ -1427,6 +1578,7 @@ function wireSnapshots() {
             `Other snapshots are unaffected. This cannot be undone.`;
     }
     if (!window.confirm(msg)) return;
+    setProfileBusy(true);
     btn.disabled = true;
     btn.textContent = "Deleting\u2026";
     status.className = "manage-status";
@@ -1478,6 +1630,8 @@ function wireSnapshots() {
         const sd = await sr.json();
         renderSnapshots(sd.snapshots || [], sd.warnings || []);
       } catch (_) { /* best-effort */ }
+    } finally {
+      setProfileBusy(false);
     }
   });
 }
@@ -1492,7 +1646,25 @@ function render() {
   // the DOM unconditionally before deciding to hide or repaint.
   renderUnilateralPanel(state.data);
   const s = latestSnapshot();
-  if (!s) return;
+  if (!s) {
+    $("stats").innerHTML = "";
+    $("stats").hidden = true;
+    $("relationship-panels").hidden = true;
+    for (const id of ["nfb-list", "dfmb-list", "disabled-list"]) $(id).innerHTML = "";
+    for (const id of ["nfb-count", "dfmb-count", "disabled-count"]) $(id).textContent = "0";
+    $("disabled-section").hidden = true;
+    $("snapshot-info").textContent = state.profile.enabled && !state.profile.activeId ? "No account" : "No snapshots";
+    $("generated").textContent = "";
+    const empty = $("profile-empty");
+    empty.hidden = false;
+    empty.innerHTML = state.profile.enabled && !state.profile.activeId
+      ? "<strong>Add an Instagram account to begin.</strong><br>Use the Add account button above."
+      : "<strong>This account has no snapshots yet.</strong><br>Use Add data below to import your Instagram export.";
+    return;
+  }
+  $("stats").hidden = false;
+  $("relationship-panels").hidden = false;
+  $("profile-empty").hidden = true;
   $("generated").textContent = fmtAgo(state.data.generated_at);
   renderHeader(s);
   renderStats(s);
@@ -1501,7 +1673,10 @@ function render() {
   renderDisabledPanel(s);
 }
 
+let _searchWired = false;
 function wireSearch() {
+  if (_searchWired) return;
+  _searchWired = true;
   const wire = (inputId, key) => {
     const el = $(inputId);
     el.addEventListener("input", (e) => {
@@ -1520,7 +1695,7 @@ function wireSearch() {
 }
 
 // ponytail: cache-bust via Date.now() on the report URL so re-running python run.py reflects on refresh.
-async function load() {
+async function load(strictSnapshots = false) {
   const r = await fetch("/dist/report.json?v=" + Date.now(), { cache: "no-store" });
   if (!r.ok) throw new Error("failed to load report.json");
   state.data = await r.json();
@@ -1543,6 +1718,7 @@ async function load() {
     renderSnapshots(sd.snapshots || [], sd.warnings || []);
   } catch (e) {
     console.error("snapshots load failed:", e);
+    if (strictSnapshots) throw e;
   }
 }
 
@@ -1597,6 +1773,7 @@ function wireImport() {
 
     submitBtn.disabled = true;
     submitBtn.textContent = "Importing…";
+    setProfileBusy(true);
     try {
       const r = await fetch("/import", { method: "POST", body: fd });
       // ponytail: server sends plain-text send_error() bodies on 4xx/5xx;
@@ -1610,30 +1787,50 @@ function wireImport() {
       // chrome mixes and a stale `<code>` chip from a previous error leaks
       // into the success-style line.
       status.className = "import-status ok";
-      // ponytail: give the status line a beat to render before we re-fetch and
-      // wipe the panels, otherwise fast-import feels silent.
-      setTimeout(() => load().catch(err => {
+      try {
+        await load(true);
+        status.innerHTML = `Imported ${res.followers.toLocaleString()} followers and ${res.following.toLocaleString()} following into <code>${res.snapshot_folder}</code>.`;
+      } catch (err) {
         status.className = "import-status err";
         status.textContent = `Saved to ${res.snapshot_folder}, but report refresh failed: ${err.message}`;
-      }), 350);
+      }
     } catch (err) {
       status.className = "import-status err";
       const msg = String(err.message || err).replace(/^HTTP \d+:?\s*/, "");
       status.textContent = `Import failed: ${msg}`;
     } finally {
-      submitBtn.disabled = false;
+      submitBtn.disabled = state.profile.enabled && !state.profile.activeId;
       submitBtn.textContent = "Import snapshot";
+      setProfileBusy(false);
     }
   });
 }
 
-load().catch((e) => {
-  document.body.innerHTML = `<div class="wrap"><div class="empty-state">
-    <strong>Could not load report.</strong><br><br>
-    Make sure you ran <code>python run.py</code> first
-    so <code>dist/report.json</code> exists.
-    <br><br><em>${e.message}</em>
-  </div></div>`;
+async function bootstrap() {
+  wireSearch();
+  wireFlagButtons();
+  wireDisclosure();
+  wireUnilateralDisclosure();
+  wireManageDisclosure();
+  wireImport();
+  wireSnapshots();
+  wireProfiles();
+  await refreshProfiles();
+  if (!state.profile.enabled) {
+    await load();
+    return;
+  }
+  if (state.profile.activeId) {
+    await load(true);
+    return;
+  }
+  resetProfileView();
+  await createProfile(state.profile.legacyNeedsUsername);
+}
+
+bootstrap().catch((e) => {
+  resetProfileView();
+  setProfileStatus(`Could not load the report: ${e.message}`, true);
 });
 </script>
 </body>

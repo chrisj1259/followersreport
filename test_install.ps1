@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# test_install.ps1 -- VM-side acceptance test for InstagramFollowerReport-Setup-v1.0.exe
+# test_install.ps1 -- VM-side acceptance test for InstagramFollowerReport-Setup-v1.1.0.exe
 #
 # Run on a clean Windows VM with NO WebView2 runtime installed. The harness:
 #
@@ -9,18 +9,17 @@
 #   3. RUN         -- run the bundled setup silently (/SP-/VERYSILENT/SUPPRESSMSGBOXES/NORESTART).
 #   4. POSTCHECK   -- poll the WebView2 registry keys for up to 300s; the lossy embedded
 #                     bootstrapper pulls the runtime via Windows Update and writes its pv.
-#   5. APPDATA     -- assert %APPDATA%\InstagramFollowerReport\ exists with the .installed
-#                     marker AND the seeded data/ + disabledaccounts.json migrated.
-#   6. WINDOW      -- launch %ProgramFiles%\InstagramFollowerReport\InstagramFollowerReport.exe
-#                     and assert MainWindowHandle is non-zero (pywebview successfully opened
-#                     a WebView2-backed window).
+#   5. APPDATA     -- identify the expected per-user storage paths.
+#   6. WINDOW      -- launch the app, assert pywebview opened a window, then verify the
+#                     profile manifest was created and legacy data remains available for
+#                     the username migration prompt.
 #   7. /FLAG       -- run `python run.py 9999` in the background, POST a synthetic handle to
-#                     /flag, assert %APPDATA%\InstagramFollowerReport\disabledaccounts.json
-#                     contains the handle, then POST /flag with action=remove and assert it's
+#                     /flag, assert the CLI data/disabledaccounts.json contains the handle,
+#                     then POST /flag with action=remove and assert it's
 #                     gone. This exercises the FlagHandler HTTP round-trip + atomic write path.
 #
 # Required on the VM:
-#   * Output\InstagramFollowerReport-Setup-v1.0.exe (from `python build.py` on the dev box)
+#   * Output\InstagramFollowerReport-Setup-v1.1.0.exe (from `python build.py` on the dev box)
 #   * Python 3.10+ on PATH (for step 7); otherwise step 7 is reported as a SKIP with a warning.
 #   * run.py copied next to this script (for step 7); we copy it if available in the parent
 #     repo source.
@@ -32,7 +31,7 @@
 
 [CmdletBinding()]
 param(
-    [string] $SetupExe = (Join-Path $PSScriptRoot 'Output\InstagramFollowerReport-Setup-v1.0.exe'),
+    [string] $SetupExe = (Join-Path $PSScriptRoot 'Output\InstagramFollowerReport-Setup-v1.1.0.exe'),
     [string] $SourceRepo = $PSScriptRoot,    # where run.py / data / index.html live in the dev checkout
     [string] $TempDir   = (Join-Path $env:TEMP 'ifr-e2e'),
     [int]    $ServerPort = 9999
@@ -122,36 +121,24 @@ if (-not $postState.Installed) {
 }
 Write-Host "[OK] WebView2 installed (version $($postState.Version))" -ForegroundColor Green
 
-# ---- 5. APPDATA BOOTSTRAP -------------------------------------------------
+# ---- 5. APPDATA PATHS -----------------------------------------------------
 
-Write-Host '[RUN] verifying %APPDATA%\InstagramFollowerReport\ was bootstrapped by app.first-launch' -ForegroundColor Cyan
 $appData     = [Environment]::GetFolderPath('ApplicationData')
 $appDataDir  = Join-Path $appData 'InstagramFollowerReport'
 $markerPath  = Join-Path $appDataDir '.installed'
 $dataPath    = Join-Path $appDataDir 'data'
 $distPath    = Join-Path $appDataDir 'dist'
 $flagPath    = Join-Path $appDataDir 'disabledaccounts.json'
+$manifestPath = Join-Path $appDataDir 'profiles.json'
+$profilesPath = Join-Path $appDataDir 'profiles'
 $expectDate  = '07-15-2026'
-if (-not (Test-Path $appDataDir)) { throw "APPDATA bootstrap missing: $appDataDir" }
-if (-not (Test-Path $markerPath)) { throw ".installed marker missing -- bootstrap_data_root() never ran" }
-if (-not (Test-Path $distPath))   { throw "dist/ missing in APPDATA" }
-if (-not (Test-Path $dataPath))   { throw "data/ missing in APPDATA" }
-if (-not (Test-Path $flagPath))   { throw "disabledaccounts.json missing in APPDATA" }
-if (-not (Test-Path (Join-Path $dataPath $expectDate))) {
-    throw "expected seeded snapshot $expectDate NOT migrated into APPDATA -- bootstrap_data_root lookup missed"
-}
-$flaggedContent = Get-Content $flagPath -Raw
-if (-not $flaggedContent.Contains('seed_disabled_xyz')) {
-    throw "expected seeded handle 'seed_disabled_xyz' NOT migrated into disabledaccounts.json. Got: $flaggedContent"
-}
-Write-Host "[OK] APPDATA bootstrap migrated $expectDate/ + flagged handle successfully" -ForegroundColor Green
 
 # ---- 6. APP LAUNCH + WINDOW VERIFY ----------------------------------------
 
 $appExe = Join-Path ${env:ProgramFiles} 'InstagramFollowerReport\InstagramFollowerReport.exe'
 if (-not (Test-Path $appExe)) { throw "App exe missing at $appExe -- install step may have failed" }
 Write-Host "[RUN] launching $appExe" -ForegroundColor Cyan
-$app = Start-Process -FilePath $appExe -PassThru
+$app = Start-Process -FilePath $appExe -WorkingDirectory $setupDir -PassThru
 try {
     # ponytail: pywebview's WindowViewSourceLoaded + WebView2 process spawn
     # can take 8-30s on slow VMs. Poll with a deadline instead of fixed sleep.
@@ -169,6 +156,27 @@ try {
         throw "App is running but MainWindowHandle is 0 after 30s -- pywebview did not produce a window."
     }
     Write-Host "[OK] app windowed: handle=$($app.MainWindowHandle) title='$($app.MainWindowTitle)'" -ForegroundColor Green
+
+    Write-Host '[RUN] verifying profile manifest and rollback-safe legacy migration state' -ForegroundColor Cyan
+    if (-not (Test-Path $appDataDir)) { throw "APPDATA bootstrap missing: $appDataDir" }
+    if (-not (Test-Path $markerPath)) { throw ".installed marker missing -- bootstrap_data_root() never ran" }
+    if (-not (Test-Path $distPath))   { throw "dist/ missing in APPDATA" }
+    if (-not (Test-Path $dataPath))   { throw "legacy data/ missing in APPDATA" }
+    if (-not (Test-Path $flagPath))   { throw "legacy disabledaccounts.json missing in APPDATA" }
+    if (-not (Test-Path $manifestPath)) { throw "profiles.json missing after desktop startup" }
+    if (-not (Test-Path $profilesPath)) { throw "profiles/ missing after desktop startup" }
+    if (-not (Test-Path (Join-Path $dataPath $expectDate))) {
+        throw "expected seeded snapshot $expectDate NOT retained for profile migration"
+    }
+    $flaggedContent = Get-Content $flagPath -Raw
+    if (-not $flaggedContent.Contains('seed_disabled_xyz')) {
+        throw "expected seeded handle 'seed_disabled_xyz' NOT retained. Got: $flaggedContent"
+    }
+    $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    if ($manifest.schema_version -ne 1) { throw "profiles.json has an unsupported schema version" }
+    if ($manifest.active_profile_id) { throw "legacy data must not be displayed before its username is supplied" }
+    if (@($manifest.profiles).Count -ne 0) { throw "legacy startup unexpectedly created an anonymous profile" }
+    Write-Host "[OK] profiles.json + profiles/ created; legacy snapshot and flags retained pending username" -ForegroundColor Green
 } finally {
     Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
@@ -200,6 +208,7 @@ else {
         Write-Warning "[SKIP] run.py not present at $runSrc -- step 7 skipped."
     }
     else {
+        $cliFlagPath = Join-Path $PSScriptRoot 'data\disabledaccounts.json'
         if (-not (Test-Path $TempDir)) { New-Item -ItemType Directory -Path $TempDir -Force | Out-Null }
         $srvLog = Join-Path $TempDir 'srv.out'
         $srvErr = Join-Path $TempDir 'srv.err'
@@ -224,9 +233,9 @@ else {
             if (-not $j.ok) { throw "POST /flag returned ok=false: $($resp.Content)" }
             Write-Host "[OK] POST /flag returned ok=true total=$($j.total)" -ForegroundColor Green
 
-            $now = Get-Content $flagPath -Raw
+            $now = Get-Content $cliFlagPath -Raw
             if (-not $now.Contains($probeHandle)) {
-                throw "/flag add succeeded but $flagPath does NOT contain $probeHandle. Got: $now"
+                throw "/flag add succeeded but $cliFlagPath does NOT contain $probeHandle. Got: $now"
             }
             Write-Host "[OK] disabledaccounts.json contains $probeHandle" -ForegroundColor Green
 
@@ -235,7 +244,7 @@ else {
             $resp2 = Invoke-WebRequest -Uri $url -Method Post -Body $body2 -ContentType 'application/json' -TimeoutSec 10 -UseBasicParsing
             $j2 = $resp2.Content | ConvertFrom-Json
             if (-not $j2.ok) { Write-Warning "[WARN] POST /flag remove did not return ok=true: $($resp2.Content)" }
-            $after = Get-Content $flagPath -Raw
+            $after = Get-Content $cliFlagPath -Raw
             if ($after.Contains($probeHandle)) {
                 Write-Warning "[WARN] /flag remove: $probeHandle still in disabledaccounts.json. Got: $after"
             } else {

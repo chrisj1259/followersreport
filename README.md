@@ -10,6 +10,7 @@ A local-first Windows desktop app (and CLI) that reads your Instagram data expor
 - **Panels**: full lists of the above, plus a "Likely disabled / deactivated" panel for flagged accounts.
 - **Unilateral unfollows**: people who followed you in the past but no longer do, and whom you never followed back.
 - **Browser import**: drag-and-drop new snapshots directly into the app UI.
+- **Multiple desktop accounts**: add and switch Instagram usernames without mixing their snapshots, history, or flagged accounts.
 - **Windows installer**: a real `.exe` installer with Start Menu shortcut, desktop shortcut option, and uninstaller.
 
 ## Requirements
@@ -53,7 +54,7 @@ A local-first Windows desktop app (and CLI) that reads your Instagram data expor
 
 ## Building the Windows installer
 
-These steps produce `Output/InstagramFollowerReport-Setup-v1.0.exe`, the file you ship or install.
+These steps produce `Output/InstagramFollowerReport-Setup-v<version>.exe`, the file you ship or install.
 
 ### 1. Install build dependencies
 
@@ -75,14 +76,14 @@ This one command:
 
 1. Downloads `redist/MicrosoftEdgeWebview2Setup.exe` (~80MB, cached after the first build).
 2. Runs `pyinstaller build.spec` to produce `dist/InstagramFollowerReport/InstagramFollowerReport.exe`.
-3. Invokes `ISCC installer.iss` to compile `Output/InstagramFollowerReport-Setup-v1.0.exe`.
+3. Invokes `ISCC installer.iss` to compile the versioned installer in `Output/`.
 
 ### 3. Ship or install
 
 The file to distribute or run is:
 
 ```
-Output/InstagramFollowerReport-Setup-v1.0.exe
+Output/InstagramFollowerReport-Setup-v<version>.exe
 ```
 
 Double-click it on any Windows 10/11 machine to install. The installer will:
@@ -96,29 +97,44 @@ Double-click it on any Windows 10/11 machine to install. The installer will:
 
 ## Installing and running on Windows
 
-If you received `InstagramFollowerReport-Setup-v1.0.exe`:
+If you received an `InstagramFollowerReport-Setup-v<version>.exe`:
 
 1. **Run the installer** (double-click).
 2. **Follow the wizard**. If WebView2 is missing, click Yes to install it.
 3. **Launch the app** when the installer finishes (checked by default).
-4. **Add your Instagram data** using the **Add data** panel at the bottom of the app window.
+4. **Add your Instagram username** in the header, then add your data using the **Add data** panel.
 
 Your data lives in `%APPDATA%\InstagramFollowerReport\` and survives reinstalls and uninstalls.
 
+## Updates and GitHub releases
+
+The installed app checks the latest public GitHub Release when it opens. If a newer version exists, it offers to download and run the installer; app data remains in `%APPDATA%\InstagramFollowerReport\`.
+
+To publish an update, push a semantic version tag such as `v1.2.3`. GitHub Actions builds that tag and attaches the versioned installer to its release. Regular pushes to `main` only build and test. People who installed a release before this updater existed need to install the first updater-enabled release manually once.
+
+The installers are currently unsigned, so Windows SmartScreen or UAC may show a warning. Add code signing when distributing broadly.
+
 ## Using the app
+
+### Add or switch Instagram accounts
+
+Use the account selector in the header to switch profiles, or **Add account** to create one. Usernames are normalized to lowercase and may contain letters, numbers, periods, and underscores. Each profile keeps its own snapshots, report history, and flagged accounts.
+
+If an older installation already has data, the app asks which Instagram username owns it. The migration copies that data into the selected profile and leaves the original files in place as a rollback backup.
 
 ### Add a snapshot from the browser / desktop UI
 
-1. Scroll to the **Add data** panel.
-2. Enter the snapshot date as `MM-DD-YYYY`.
-3. Attach `followers_1.json` and `following.json` from your unzipped Instagram export.
-4. Click **Import snapshot**.
+1. Select the Instagram account in the header.
+2. Scroll to the **Add data** panel.
+3. Enter the snapshot date as `MM-DD-YYYY`.
+4. Attach `followers_1.json` and `following.json` from your unzipped Instagram export.
+5. Click **Import snapshot**.
 
 The report refreshes automatically.
 
 ### Flag suspicious accounts
 
-Hover any row in **People I don't follow back** or **People who don't follow me back** and click **Flag**. The handle moves into the **Likely disabled / deactivated** panel and is excluded from active lists. Click **Unflag** to restore it. Flagged handles are stored in `data/disabledaccounts.json` (CLI) or `%APPDATA%\InstagramFollowerReport\disabledaccounts.json` (installed app).
+Hover any row in **People I don't follow back** or **People who don't follow me back** and click **Flag**. The handle moves into the **Likely disabled / deactivated** panel and is excluded from active lists. Click **Unflag** to restore it. Flagged handles are stored in `data/disabledaccounts.json` (CLI) or the active profile's `disabledaccounts.json` (installed app).
 
 ### Network-side disabled-account detection
 
@@ -146,19 +162,23 @@ dist/
 
 ```
 %APPDATA%\InstagramFollowerReport\
-  data/
-    MM-DD-YYYY/
-      followers_1.json
-      following.json
-  disabledaccounts.json
+  profiles.json
+  profiles/
+    <internal-id>/
+      data/
+        MM-DD-YYYY/
+          followers_1.json
+          following.json
+      disabledaccounts.json
   dist/
     report.json
 ```
 
-Program files are read-only under `%PROGRAMFILES%\InstagramFollowerReport\`.
+The internal profile ID is generated by the app and is never derived from a username. `dist/report.json` is only the active profile's local render cache. Program files are read-only under `%PROGRAMFILES%\InstagramFollowerReport\`.
 
 ## Privacy
 
+- Desktop profiles and the selected account are stored only in `%APPDATA%\InstagramFollowerReport\`.
 - The local server binds to `127.0.0.1` only — never exposed to your LAN.
 - `--check-disabled` makes anonymous `instagram.com/<handle>` requests without authentication or cookies. Off by default.
 - No telemetry or analytics.

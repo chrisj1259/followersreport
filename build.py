@@ -9,13 +9,15 @@ Run:
 Output:
     redist/MicrosoftEdgeWebview2Setup.exe    (~80MB; cached after first build)
     dist/InstagramFollowerReport/InstagramFollowerReport.exe   (PyInstaller --onedir)
-    Output/InstagramFollowerReport-Setup-v1.0.exe            (final installer — ship this)
+    Output/InstagramFollowerReport-Setup-v<version>.exe       (final installer — ship this)
 
 Pure-stdlib Python for the orchestration; the only third-party deps are
 PyInstaller and webview themselves which the actual build needs.
 """
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +28,10 @@ ROOT = Path(__file__).parent.resolve()
 REDIST = ROOT / "redist"
 WEBVIEW2_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 WEBVIEW2_BOOTSTRAPPER_PATH = REDIST / "MicrosoftEdgeWebview2Setup.exe"
+APP_VERSION = os.environ.get("APP_VERSION", "0.0.0-dev")
+
+if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", APP_VERSION):
+    raise SystemExit("APP_VERSION must be a semantic version such as 1.2.3")
 
 
 def ensure_webview2_bootstrapper() -> Path:
@@ -105,11 +111,11 @@ def main() -> int:
     iscc = find_iscc()
     iss_path = ROOT / "installer.iss"
     print(f"[inno] running {iscc} on {iss_path.name}")
-    res = subprocess.run([iscc, str(iss_path)], cwd=str(ROOT))
+    res = subprocess.run([iscc, f"/DAppVersion={APP_VERSION}", str(iss_path)], cwd=str(ROOT))
     if res.returncode != 0:
         raise SystemExit(f"Inno Setup failed with exit code {res.returncode}")
 
-    out = ROOT / "Output" / "InstagramFollowerReport-Setup-v1.0.exe"
+    out = ROOT / "Output" / f"InstagramFollowerReport-Setup-v{APP_VERSION}.exe"
     if out.exists():
         print(f"[done] installer: {out} ({out.stat().st_size:,} bytes)")
     else:
