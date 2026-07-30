@@ -353,5 +353,25 @@ assert failed_manifest["profiles"] == [] and failed_manifest["migration_complete
 assert list((failed / "profiles").iterdir()) == [] and (failed / "data" / date_str).is_dir()
 print("T9 legacy migration OK: root/nested flags, originals retained, cleanup, idempotence")
 
+# === T10: source-mode startup enables the same profile backend as desktop ===
+source = sb / "source-mode"
+(source / "data" / date_str).mkdir(parents=True)
+(source / "data" / date_str / "followers_1.json").write_text(json.dumps([ig("source_follower")]))
+(source / "data" / date_str / "following.json").write_text(json.dumps([ig("source_following")]))
+run.PROFILE_ROOT = run.PROFILE_MANIFEST = run.PROFILE_OUT_DIR = None
+run.ROOT = source
+run._set_data_paths(data_dir=source / "data", out_dir=source / "dist",
+                    disabled_file=source / "data" / "disabledaccounts.json")
+real_parse_args, real_serve = run.parse_args, run.serve
+run.parse_args = lambda: argparse.Namespace(subcommand=None, check_disabled=False, port=0)
+run.serve = lambda port: None
+try:
+    run.main()
+finally:
+    run.parse_args, run.serve = real_parse_args, real_serve
+payload = run._profiles_payload()
+assert payload["profile_mode"] is True and payload["legacy_needs_username"] is True
+print("T10 source profiles OK: web startup exposes legacy migration/account controls")
+
 shutil.rmtree(sb, ignore_errors=True)
 print("SMOKE_TEST_OK")

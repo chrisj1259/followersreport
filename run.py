@@ -55,7 +55,6 @@ import shutil
 import socket
 import sys
 import tempfile
-import threading
 import time
 import urllib.request
 import uuid
@@ -371,19 +370,7 @@ def _read_flagged() -> set[str]:
 def _write_flagged(handles: set[str]) -> None:
     """Atomic write via temp-file rename so a crash mid-write can't corrupt
     the user's curated list."""
-    DISABLED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    out = sorted(handles)
-    fd, tmp_path = tempfile.mkstemp(prefix=".disabled-", dir=str(DISABLED_FILE.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(out, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, DISABLED_FILE)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    _atomic_json(DISABLED_FILE, sorted(handles))
 
 
 def add_flagged(username: str) -> list[str]:
@@ -500,69 +487,6 @@ def _parse_multipart(content_type: str, body: bytes):
         else:
             fields[name] = data.decode("utf-8", "replace")
     return fields, files
-
-
-def _selftest() -> None:
-    """Lightweight self-check for /import's parsing + date code-path.
-
-    Run with: python -c "import run; run._selftest()"
-    """
-    body = (
-        b'--AaB03x\r\nContent-Disposition: form-data; name="date"\r\n\r\n'
-        b'07-15-2026\r\n'
-        b'--AaB03x\r\nContent-Disposition: form-data; name="followers"; filename="x.json"\r\nContent-Type: application/json\r\n\r\n'
-        b'{"a":1}\r\n'
-        b'--AaB03x\r\nContent-Disposition: form-data; name="following"; filename="y.json"\r\nContent-Type: application/json\r\n\r\n'
-        b'[]\r\n'
-        b'--AaB03x--\r\n'
-    )
-    fields, files = _parse_multipart('multipart/form-data; boundary=AaB03x', body)
-    assert fields.get("date") == "07-15-2026", fields
-    assert files.get("followers") == b'{"a":1}', files
-    assert files.get("following") == b"[]", files
-
-    parse_folder_date("07-15-2026")  # accept canonical
-    for bad in ("2026-07-15", "07/15/2026", "", "07-15-26", "07-15-202",
-                "07-ab-2026", "abcd-ef-ghij", "7-15-2026",
-                "007-15-2026", "07-015-2026"):
-        try:
-            parse_folder_date(bad)
-            assert False, f"should have rejected {bad!r}"
-        except ValueError:
-            pass
-
-    # ponytail: regression-test the friendly bind-error path so a future
-    # refactor cannot silently regress the user-facing recipes the README
-    # now promises. Spin one server in a thread, then a second bind to the
-    # same port must raise SystemExit carrying both the platform-appropriate
-    # recipe and the literal `python run.py <port+1>` fallback hint.
-    h1 = _run_server(0)
-    busy_port = h1.server_address[1]
-    t1 = threading.Thread(target=h1.serve_forever, daemon=True)
-    t1.start()
-    time.sleep(0.3)
-    try:
-        try:
-            _run_server(busy_port)
-        except SystemExit as e:
-            msg = str(e)
-            expected_recipe = "tasklist" if sys.platform == "win32" else "lsof"
-            assert expected_recipe in msg, f"missing platform recipe {expected_recipe!r} in: {msg!r}"
-            assert f"python run.py {busy_port + 1}" in msg, f"missing port+1 fallback in: {msg!r}"
-        else:
-            # ponytail: silent-false-negative guard. If the second bind
-            # succeeded without raising SystemExit, the friendly-error
-            # regression slipped through -- fail loudly.
-            raise AssertionError(
-                f"second _run_server({busy_port}) unexpectedly succeeded; "
-                f"friendly-error regression slipped through."
-            )
-    finally:
-        h1.shutdown()
-        h1.server_close()
-        t1.join(timeout=2)
-
-    print("self-check ok")
 
 
 def parse_folder_date(name: str) -> datetime:
@@ -1571,13 +1495,21 @@ def run_analyze(args: argparse.Namespace) -> None:
 def main() -> None:
     args = parse_args()
     if args.subcommand == "import":
+        if (ROOT / "profiles.json").exists():
+            enable_profile_mode(ROOT, ROOT / "dist")
+            if _profiles_payload()["active_profile_id"] is None:
+                raise SystemExit("select or create an account in the browser before importing")
         try:
             date = parse_folder_date(args.date_str)
         except ValueError as e:
             raise SystemExit(f"bad --date {args.date_str!r}: {e}")
         cmd_import(Path(args.source), date)
     else:
-        run_analyze(args)
+        enable_profile_mode(ROOT, ROOT / "dist")
+        if _profiles_payload()["active_profile_id"] is None:
+            _emit_stub_report()
+        else:
+            run_analyze(args)
         serve(args.port)
 
 

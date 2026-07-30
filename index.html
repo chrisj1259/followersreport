@@ -3,53 +3,54 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="dark">
 <title>Instagram Follower Report</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700;800&display=swap">
 <style>
-  /* ponytail: design language lifted from designinspo/design.html — Inter Tight
-  font, pill-shaped chips, FA5D29 / 49B3FC / AAEEC4 / 502bd8 accent palette,
-  uppercase eyebrow labels with .1em tracking, soft pastel count badges, and
-  rounded 4 / 8 / 16px corners. Light editorial primary bg; disclosure
-  sections share the same white card surface. */
+  /* ponytail: design language lifted from references/makemepulse.com — big
+  lowercase grotesque headline with a trailing period, bold 1.5px rules
+  instead of soft hairlines, sharp-cornered cards but fully pill-rounded
+  CTAs/badges. Flipped to black-outside/white-ink throughout (no more
+  alternating white sections) with a red accent for the app's single
+  primary action + focus/link states, and a darker red reserved for
+  danger/error so it doesn't read as the same color as the primary CTA.
+  --true-black/--true-white never flip with the theme — they're for spots
+  (badges, button text on a colored fill, native <option> text) that need
+  a fixed polarity regardless of what --bg-primary/--color-primary mean.
+  Reuses Inter Tight (already loaded) as the display face instead of adding
+  a condensed grotesque — set huge and tight it reads the same. */
   :root {
-    /* font tokens — Inter Tight variable, weights matched to Awwwards */
+    /* font tokens */
     --font-1: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Inter", sans-serif;
     --font-normal: 400;
     --font-medium: 500;
-    --font-bold: 600;
+    --font-bold: 700;
 
-    /* color tokens */
-    --color-primary: #222;
-    --color-link: #222;
-    --color-muted: #6a6a6a;
-    --color-muted-2: #444;
-    --color-white: #fff;
-    --color-orange: #FA5D29;
-    --color-blue: #49B3FC;
-    --color-inspire: #AAEEC4;
-    --color-awards: #502bd8;
-    --color-soft-orange: #f8f0ee;
-    --color-soft-blue: #e1f0fc;
-    --color-soft-purple: #ece6f8;
-    --color-soft-muted: #ececec;
+    /* color tokens — white ink on black, one red accent + a lighter red for errors */
+    --color-primary: #ffffff;
+    --color-muted: #8f8b86;
+    --color-muted-2: #c7c3ba;
+    --true-black: #0a0a0a;
+    --true-white: #ffffff;
+    --color-orange: #dc2626;
+    --color-inspire: #3fae66;
+    --color-danger: #ff8a80;
 
     /* surface tokens */
-    --bg-primary: #F8F8F8;
-    --bg-secondary: #222;
-    --bg-card: #fff;
-    --bg-hover: #f1f1f1;
-    --border-gray: #ededed;
-    --border-normal: 1px;
+    --bg-primary: #0a0a0a;
+    --bg-card: #0a0a0a;
+    --bg-invert: #0a0a0a;
+    --text-invert: #ffffff;
+    --border-gray: rgba(255, 255, 255, 0.16);
+    --border-strong: transparent;
+    --border-normal: 1.5px;
 
-    /* radius tokens */
-    --rounded-small: 4px;
-    --rounded-normal: 8px;
-    --rounded-large: 1rem;
-
-    /* misc tokens */
+    /* radius tokens — sharp cards, fully pill CTAs/badges */
+    --rounded-small: 0px;
+    --rounded-normal: 0px;
+    --rounded-large: 0px;
     --pill: 999px;
   }
   * { box-sizing: border-box; }
@@ -70,32 +71,40 @@
   }
 
   /* ---------- header ---------- */
+  /* ponytail: page background is black throughout now, so the header no
+  longer needs its own block color to read as a band — a hairline rule
+  under it is enough separation. Negative margin still breaks it out flush
+  to .wrap's edges. */
   header.top {
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
     gap: 24px;
     flex-wrap: wrap;
-    padding-bottom: 22px;
+    background: var(--bg-invert);
     border-bottom: var(--border-normal) solid var(--border-gray);
-    margin-bottom: 32px;
+    margin: -36px -28px 32px;
+    padding: 40px 28px 32px;
   }
   .brand .eyebrow {
     display: inline-block;
-    font-size: 12px;
-    color: var(--color-orange);
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.55);
     font-weight: var(--font-medium);
     text-transform: uppercase;
-    letter-spacing: 0.12em;
-    margin-bottom: 8px;
+    letter-spacing: 0.16em;
+    margin-bottom: 10px;
   }
   h1 {
-    font-size: clamp(28px, 2.6rem + 0.6vw, 48px);
-    font-weight: var(--font-bold);
-    line-height: 1.05;
-    letter-spacing: -0.01em;
+    font-size: clamp(34px, 3rem + 0.8vw, 64px);
+    font-weight: var(--font-medium);
+    text-transform: lowercase;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: var(--text-invert);
     margin: 0;
   }
+  h1::after { content: "."; color: var(--color-orange); }
   .meta {
     display: inline-flex;
     align-items: center;
@@ -107,27 +116,31 @@
     align-items: center;
     gap: 6px;
     padding: 7px 14px;
+    border: var(--border-normal) solid rgba(255, 255, 255, 0.3);
     border-radius: var(--pill);
-    color: var(--color-white);
-    font-size: 12px;
+    background: transparent;
+    color: var(--text-invert);
+    font-size: 11px;
+    text-transform: uppercase;
     font-weight: var(--font-medium);
-    letter-spacing: 0.02em;
+    letter-spacing: 0.06em;
     white-space: nowrap;
   }
-  .meta .pill.dark    { background: var(--color-primary); }
-  .meta .pill.subtle  { background: var(--color-soft-muted); color: var(--color-muted-2); }
+  .meta .pill.dark    { background: var(--text-invert); color: var(--bg-invert); border-color: var(--text-invert); }
+  .meta .pill.subtle  { color: rgba(255, 255, 255, 0.55); }
   .profile-controls { display: inline-flex; align-items: center; gap: 8px; }
-  .profile-controls label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: var(--font-medium); }
+  .profile-controls label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: var(--font-medium); color: var(--text-invert); }
   .profile-controls select,
-  .profile-controls button { appearance: none; border: var(--border-normal) solid var(--border-gray); border-radius: var(--pill); background: var(--color-white); color: var(--color-primary); padding: 7px 12px; font: inherit; font-size: 12px; }
+  .profile-controls button { appearance: none; border: var(--border-normal) solid rgba(255, 255, 255, 0.3); border-radius: var(--pill); background: transparent; color: var(--text-invert); padding: 7px 12px; font: inherit; font-size: 12px; }
   .profile-controls select { min-width: 150px; cursor: pointer; }
-  .profile-controls button { background: var(--color-primary); color: var(--color-white); border-color: var(--color-primary); cursor: pointer; }
+  .profile-controls select option { color: var(--true-black); }
+  .profile-controls button { background: var(--text-invert); color: var(--bg-invert); border-color: var(--text-invert); text-transform: uppercase; font-size: 11px; letter-spacing: 0.06em; font-weight: var(--font-bold); cursor: pointer; }
   .profile-controls select:focus-visible,
   .profile-controls button:focus-visible { outline: 2px solid var(--color-orange); outline-offset: 2px; }
   .profile-controls select:disabled,
   .profile-controls button:disabled { opacity: 0.55; cursor: not-allowed; }
-  .profile-status { width: 100%; color: var(--color-muted); font-size: 12px; text-align: right; min-height: 1em; }
-  .profile-status.err { color: var(--color-orange); font-weight: var(--font-medium); }
+  .profile-status { width: 100%; color: rgba(255, 255, 255, 0.55); font-size: 12px; text-align: right; min-height: 1em; }
+  .profile-status.err { color: var(--color-danger); font-weight: var(--font-medium); }
 
 
   /* ---------- stats ---------- */
@@ -140,31 +153,24 @@
   @media (max-width: 800px) { .stats { grid-template-columns: repeat(2, 1fr); } }
   .stat {
     background: var(--bg-card);
-    border: var(--border-normal) solid var(--border-gray);
+    border: var(--border-normal) solid var(--border-strong);
     border-radius: var(--rounded-large);
     padding: 22px 22px 18px;
     position: relative;
     overflow: hidden;
-    transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
-  }
-  .stat:hover {
-    transform: translateY(-2px);
-    border-color: #d8d8d8;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.06);
   }
   .stat::before {
     content: "";
     position: absolute;
     top: 0; left: 0;
-    width: 4px; height: 100%;
+    width: 100%; height: 3px;
     background: var(--color-orange);
   }
 
-  .stat.purple::before { background: var(--color-awards); }
   .stat .label {
     font-size: 11px;
     text-transform: uppercase;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.14em;
     color: var(--color-muted);
     font-weight: var(--font-medium);
     margin-bottom: 4px;
@@ -176,6 +182,7 @@
     line-height: 1;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;
+    color: var(--color-primary);
     margin-bottom: 6px;
   }
   .stat .sub {
@@ -193,22 +200,22 @@
   @media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
   .panel {
     background: var(--bg-card);
-    border: var(--border-normal) solid var(--border-gray);
+    border: var(--border-normal) solid var(--border-strong);
     border-radius: var(--rounded-large);
     padding: 22px;
     display: flex;
     flex-direction: column;
     min-height: 320px;
     max-height: 580px;
-    transition: border-color 200ms ease;
   }
-  .panel:hover { border-color: #d8d8d8; }
   .panel h2 {
     margin: 0 0 16px;
-    font-size: 13px;
-    font-weight: var(--font-bold);
+    padding-bottom: 14px;
+    border-bottom: var(--border-normal) solid var(--border-gray);
+    font-size: 12px;
+    font-weight: var(--font-medium);
     text-transform: uppercase;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.12em;
     color: var(--color-primary);
     display: flex;
     align-items: center;
@@ -221,14 +228,14 @@
     justify-content: center;
     min-width: 26px;
     padding: 2px 10px;
+    border: 0;
     border-radius: var(--pill);
     font-family: var(--font-1);
     font-size: 11px;
-    font-weight: var(--font-bold);
-    background: var(--color-soft-orange);
-    color: var(--color-orange);
+    font-weight: var(--font-medium);
+    background: var(--color-orange);
+    color: var(--true-white);
   }
-  .panel.purple h2 .count { background: var(--color-soft-purple); color: var(--color-awards); }
   .search {
     width: 100%;
     appearance: none;
@@ -272,9 +279,7 @@
     font-weight: var(--font-medium);
     letter-spacing: -0.005em;
     color: var(--color-primary);
-    transition: background 120ms ease;
   }
-  .list li:hover { background: var(--bg-hover); }
   .list li .u {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -296,7 +301,8 @@
   }
 
   /* ---------- flag/unflag pill buttons ---------- */
-  /* ponytail: hover-revealed pill buttons — collapse to a soft chip on row hover */
+  /* ponytail: always visible, static — no hover reveal/color-change anywhere
+  except the username link itself (per explicit request). */
   .list li button.flag-btn, .list li button.unflag-btn {
     appearance: none;
     font: inherit;
@@ -308,38 +314,32 @@
     border-radius: var(--pill);
     cursor: pointer;
     background: transparent;
-    opacity: 0;
-    transition: opacity 140ms ease, background 140ms ease, color 140ms ease, border-color 140ms ease;
+    opacity: 0.95;
     flex-shrink: 0;
   }
-  .list li button.flag-btn     { color: var(--color-orange); border: var(--border-normal) solid var(--border-gray); }
-  .list li button.unflag-btn   { color: var(--color-blue);   border: var(--border-normal) solid var(--border-gray); }
-  .list li:hover button.flag-btn,
-  .list li:focus-within button.flag-btn,
-  .list li button.flag-btn:focus-visible { opacity: 0.95; }
-  .list li:hover button.unflag-btn,
-  .list li:focus-within button.unflag-btn,
-  .list li button.unflag-btn:focus-visible { opacity: 0.95; }
-  .list li button.flag-btn:hover { background: var(--color-orange); color: var(--color-white); border-color: var(--color-orange); }
-  .list li button.unflag-btn:hover { background: var(--color-blue);   color: var(--color-white); border-color: var(--color-blue); }
+  .list li button.flag-btn     { color: var(--color-danger); border: var(--border-normal) solid var(--border-gray); }
+  .list li button.unflag-btn   { color: var(--color-primary);   border: var(--border-normal) solid var(--border-gray); }
   .list li button:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* ---------- disabled / flagged section ---------- */
-  /* ponytail: mirrors .unilateral-section — same white card surface, orange
-  left accent, and light search/list tokens as the other disclosure panels. */
+  /* ponytail: this and .unilateral-section / .manage-data used to be the
+  only black bands on an otherwise white page; now the whole page is black
+  so they need their own border (like .panel) to still read as a section. */
   section.disabled-section {
-    background: var(--bg-card);
-    border: var(--border-normal) solid var(--border-gray);
+    background: var(--bg-invert);
+    color: var(--text-invert);
+    border: var(--border-normal) solid var(--border-strong);
     border-radius: var(--rounded-large);
     padding: 22px;
     margin-bottom: 28px;
   }
   section.disabled-section h2 {
     margin: 0 0 8px;
-    font-size: 13px;
-    font-weight: var(--font-bold);
+    font-size: 12px;
+    font-weight: var(--font-medium);
     text-transform: uppercase;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.12em;
+    color: var(--text-invert);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -350,20 +350,21 @@
     align-items: center;
     min-width: 24px;
     padding: 2px 10px;
+    border: 0;
     border-radius: var(--pill);
-    background: var(--color-soft-orange);
-    color: var(--color-orange);
+    background: var(--text-invert);
+    color: var(--bg-invert);
     font-size: 11px;
-    font-weight: var(--font-bold);
+    font-weight: var(--font-medium);
   }
   section.disabled-section .explainer {
-    color: var(--color-muted);
+    color: rgba(255, 255, 255, 0.6);
     font-size: 12px;
     margin: 0 0 14px;
     line-height: 1.6;
   }
   section.disabled-section .explainer code {
-    background: var(--bg-primary);
+    background: rgba(255, 255, 255, 0.1);
     padding: 1px 6px;
     border-radius: var(--rounded-small);
     font-family: ui-monospace, "JetBrains Mono", monospace;
@@ -371,14 +372,17 @@
     color: var(--color-orange);
   }
   section.disabled-section .search {
-    background: var(--bg-primary);
-    border-color: var(--border-gray);
-    color: var(--color-primary);
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: var(--text-invert);
   }
-  section.disabled-section .search::placeholder { color: var(--color-muted); }
+  section.disabled-section .search::placeholder { color: rgba(255, 255, 255, 0.4); }
   section.disabled-section .search:focus { border-color: var(--color-orange); }
+  section.disabled-section .list li { color: var(--text-invert); }
+  section.disabled-section .list li .when { color: rgba(255, 255, 255, 0.5); }
+  section.disabled-section .list li button.unflag-btn { color: var(--text-invert); border-color: rgba(255, 255, 255, 0.3); }
 
-  /* disclosure toggle: red circle with chevron, positioned above the body
+  /* disclosure toggle: circular ghost button, positioned above the body
   content of the Likely-disabled section so users can collapse/expand the
   flagged-accounts list without scrolling. */
   .disabled-section .disclosure-toggle {
@@ -387,15 +391,13 @@
     justify-content: center;
     width: 30px; height: 30px;
     border-radius: 50%;
-    background: var(--color-orange);
-    color: var(--color-white);
-    border: 0;
+    background: transparent;
+    color: var(--text-invert);
+    border: var(--border-normal) solid rgba(255, 255, 255, 0.3);
     cursor: pointer;
     padding: 0;
     margin: 4px 0 10px;
-    transition: background 160ms ease, transform 160ms ease;
   }
-  .disabled-section .disclosure-toggle:hover { background: #e14e22; }
   .disabled-section .disclosure-toggle:focus-visible {
     outline: 2px solid var(--color-orange);
     outline-offset: 3px;
@@ -422,7 +424,7 @@
   /* ---------- empty state ---------- */
   .empty-state {
     background: var(--bg-card);
-    border: var(--border-normal) dashed var(--border-gray);
+    border: var(--border-normal) dashed var(--border-strong);
     border-radius: var(--rounded-large);
     padding: 24px;
     text-align: center;
@@ -441,6 +443,8 @@
 
   footer {
     margin-top: 40px;
+    padding-top: 24px;
+    border-top: var(--border-normal) solid var(--border-gray);
     color: var(--color-muted);
     font-size: 12px;
     text-align: center;
@@ -457,7 +461,7 @@
   YYYY-MM-DD; a text input with formatDateDash gives actual MM-DD-YYYY UX. */
   section.add-data {
     background: var(--bg-card);
-    border: var(--border-normal) solid var(--border-gray);
+    border: var(--border-normal) solid var(--border-strong);
     border-radius: var(--rounded-large);
     padding: 22px;
     margin-bottom: 28px;
@@ -534,19 +538,13 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
     cursor: pointer;
-    transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
-  }
-  .import-form input[type="file"]:hover::file-selector-button {
-    background: var(--color-orange);
-    border-color: var(--color-orange);
-    color: var(--color-white);
   }
   .import-form input[type="file"]:focus { outline: none; border-color: var(--color-orange); }
   .import-btn {
     appearance: none;
     background: var(--color-orange);
     border: 0;
-    color: var(--color-white);
+    color: var(--true-white);
     border-radius: var(--pill);
     padding: 11px 22px;
     font: inherit;
@@ -555,10 +553,9 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     cursor: pointer;
-    transition: background 140ms ease, transform 120ms ease;
+    transition: transform 120ms ease;
     height: 42px;
   }
-  .import-btn:hover { background: #e14e22; }
   .import-btn:active { transform: translateY(1px); }
   .import-btn:disabled { opacity: 0.55; cursor: not-allowed; }
   .import-status {
@@ -570,25 +567,24 @@
   }
   .import-status.ok { color: var(--color-inspire); font-weight: var(--font-medium); }
   .import-status.ok code { color: var(--color-primary); font-family: ui-monospace, "JetBrains Mono", monospace; }
-  .import-status.err { color: var(--color-orange); font-weight: var(--font-medium); }
+  .import-status.err { color: var(--color-danger); font-weight: var(--font-medium); }
 
   /* ---------- unilateral unfollowed section ---------- */
-  /* ponytail: mirrors .disabled-section disclosure widget but keeps the
-  light-card surface and purple accent of the original .panel.purple.
-  The chevron circle expands .unilateral-body via max-height + opacity. */
   section.unilateral-section {
-    background: var(--bg-card);
-    border: var(--border-normal) solid var(--border-gray);
+    background: var(--bg-invert);
+    color: var(--text-invert);
+    border: var(--border-normal) solid var(--border-strong);
     border-radius: var(--rounded-large);
     padding: 22px;
     margin-bottom: 28px;
   }
   section.unilateral-section h2 {
     margin: 0 0 8px;
-    font-size: 13px;
-    font-weight: var(--font-bold);
+    font-size: 12px;
+    font-weight: var(--font-medium);
     text-transform: uppercase;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.12em;
+    color: var(--text-invert);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -600,39 +596,40 @@
     min-width: 24px;
     padding: 2px 10px;
     border-radius: var(--pill);
-    background: var(--color-soft-orange);
-    color: var(--color-orange);
+    background: var(--text-invert);
+    color: var(--bg-invert);
     font-size: 11px;
-    font-weight: var(--font-bold);
+    font-weight: var(--font-medium);
   }
   section.unilateral-section .explainer {
-    color: var(--color-muted);
+    color: rgba(255, 255, 255, 0.6);
     font-size: 12px;
     margin: 0 0 14px;
     line-height: 1.6;
   }
   section.unilateral-section .search {
-    background: var(--bg-primary);
-    border-color: var(--border-gray);
-    color: var(--color-primary);
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: var(--text-invert);
   }
-  section.unilateral-section .search::placeholder { color: var(--color-muted); }
+  section.unilateral-section .search::placeholder { color: rgba(255, 255, 255, 0.4); }
   section.unilateral-section .search:focus { border-color: var(--color-orange); }
+  section.unilateral-section .list li { color: var(--text-invert); }
+  section.unilateral-section .list li .when { color: rgba(255, 255, 255, 0.5); }
+  section.unilateral-section .list li button.flag-btn { color: var(--color-danger); border-color: rgba(255, 255, 255, 0.3); }
   section.unilateral-section .disclosure-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 30px; height: 30px;
     border-radius: 50%;
-    background: var(--color-orange);
-    color: var(--color-white);
-    border: 0;
+    background: transparent;
+    color: var(--text-invert);
+    border: var(--border-normal) solid rgba(255, 255, 255, 0.3);
     cursor: pointer;
     padding: 0;
     margin: 4px 0 10px;
-    transition: background 160ms ease, transform 160ms ease;
   }
-  section.unilateral-section .disclosure-toggle:hover { background: #e14e22; }
   section.unilateral-section .disclosure-toggle:focus-visible {
     outline: 2px solid var(--color-orange);
     outline-offset: 3px;
@@ -657,31 +654,32 @@
   background, padding) so the second child pushes to the right under
   justify-content: space-between without any per-section override. */
   section.manage-data {
-    background: var(--bg-card);
-    border: var(--border-normal) solid var(--border-gray);
+    background: var(--bg-invert);
+    color: var(--text-invert);
+    border: var(--border-normal) solid var(--border-strong);
     border-radius: var(--rounded-large);
     padding: 22px;
     margin-bottom: 28px;
   }
   section.manage-data h2 {
     margin: 0 0 6px;
-    font-size: 13px;
-    font-weight: var(--font-bold);
+    font-size: 12px;
+    font-weight: var(--font-medium);
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--color-primary);
+    letter-spacing: 0.12em;
+    color: var(--text-invert);
   }
   section.manage-data .explainer {
-    color: var(--color-muted);
+    color: rgba(255, 255, 255, 0.6);
     font-size: 12px;
     margin: 0 0 16px;
     line-height: 1.6;
   }
   section.manage-data .explainer code, section.manage-data .explainer strong {
-    color: var(--color-primary);
+    color: var(--text-invert);
   }
   section.manage-data .explainer code {
-    background: var(--bg-primary);
+    background: rgba(255, 255, 255, 0.1);
     padding: 1px 6px;
     border-radius: var(--rounded-small);
     font-family: ui-monospace, "JetBrains Mono", monospace;
@@ -689,7 +687,7 @@
     color: var(--color-orange);
   }
   section.manage-data .explainer em {
-    color: var(--color-orange);
+    color: var(--color-danger);
     font-style: normal;
     font-weight: var(--font-bold);
   }
@@ -705,9 +703,7 @@
     gap: 12px;
     padding: 12px 14px;
     border-radius: var(--rounded-normal);
-    transition: background 120ms ease;
   }
-  section.manage-data ul.snapshot-list li:hover { background: var(--bg-hover); }
   section.manage-data ul.snapshot-list .snap-info {
     display: flex;
     flex-direction: column;
@@ -719,23 +715,23 @@
     font-size: 14px;
     font-weight: var(--font-bold);
     letter-spacing: -0.005em;
-    color: var(--color-primary);
+    color: var(--text-invert);
   }
   section.manage-data ul.snapshot-list .snap-meta {
     font-size: 12px;
-    color: var(--color-muted);
+    color: rgba(255, 255, 255, 0.6);
     font-weight: var(--font-medium);
   }
   section.manage-data ul.snapshot-list .snap-meta b {
-    color: var(--color-primary);
+    color: var(--text-invert);
     font-weight: var(--font-bold);
     font-variant-numeric: tabular-nums;
   }
   section.manage-data ul.snapshot-list .delete-btn {
     appearance: none;
     background: transparent;
-    color: var(--color-orange);
-    border: var(--border-normal) solid var(--border-gray);
+    color: var(--color-danger);
+    border: var(--border-normal) solid rgba(255, 255, 255, 0.3);
     border-radius: var(--pill);
     padding: 5px 14px;
     font: inherit;
@@ -745,46 +741,32 @@
     text-transform: uppercase;
     cursor: pointer;
     flex-shrink: 0;
-    transition: background 140ms ease, color 140ms ease, border-color 140ms ease, opacity 140ms ease;
-    opacity: 0.6;
-  }
-  section.manage-data ul.snapshot-list li:hover .delete-btn,
-  section.manage-data ul.snapshot-list li:focus-within .delete-btn,
-  section.manage-data ul.snapshot-list .delete-btn:focus-visible { opacity: 1; }
-  section.manage-data ul.snapshot-list .delete-btn:hover {
-    background: var(--color-orange);
-    border-color: var(--color-orange);
-    color: var(--color-white);
+    opacity: 1;
   }
   section.manage-data ul.snapshot-list .delete-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
     background: transparent;
-    color: var(--color-orange);
-    border-color: var(--border-gray);
+    color: var(--color-danger);
+    border-color: rgba(255, 255, 255, 0.3);
   }
   section.manage-data ul.snapshot-list .empty {
-    color: var(--color-muted);
+    color: rgba(255, 255, 255, 0.6);
     text-align: center;
     padding: 32px 0;
     font-size: 13px;
   }
-  /* ponytail: warning row sits inside ul.snapshot-list (which does NOT
-  carry .list), so the .list li:hover selector does not apply. Hover bg
-  instead comes from the more-specific section.manage-data ul.snapshot-list
-  li:hover rule below; the warning-row itself only overrides display /
-  color / font / padding so it reads as text rather than as a row. */
   section.manage-data ul.snapshot-list li.warning-row {
     display: block;
-    color: var(--color-orange);
+    color: var(--color-danger);
     font-size: 12px;
     text-align: left;
     line-height: 1.55;
     padding: 10px 14px;
   }
   section.manage-data ul.snapshot-list li.warning-row code {
-    color: var(--color-primary);
-    background: var(--bg-primary);
+    color: var(--text-invert);
+    background: rgba(255, 255, 255, 0.1);
     padding: 1px 6px;
     border-radius: var(--rounded-small);
     font-family: ui-monospace, "JetBrains Mono", monospace;
@@ -800,15 +782,13 @@
     justify-content: center;
     width: 30px; height: 30px;
     border-radius: 50%;
-    background: var(--color-orange);
-    color: var(--color-white);
-    border: 0;
+    background: transparent;
+    color: var(--text-invert);
+    border: var(--border-normal) solid rgba(255, 255, 255, 0.3);
     cursor: pointer;
     padding: 0;
     margin: 4px 0 10px;
-    transition: background 160ms ease, transform 160ms ease;
   }
-  section.manage-data .disclosure-toggle:hover { background: #e14e22; }
   section.manage-data .disclosure-toggle:focus-visible {
     outline: 2px solid var(--color-orange);
     outline-offset: 3px;
@@ -836,12 +816,12 @@
   .manage-status {
     margin-top: 12px;
     font-size: 12px;
-    color: var(--color-muted);
+    color: rgba(255, 255, 255, 0.6);
     min-height: 1em;
     line-height: 1.5;
   }
   .manage-status.ok { color: var(--color-inspire); font-weight: var(--font-medium); }
-  .manage-status.err { color: var(--color-orange); font-weight: var(--font-medium); }
+  .manage-status.err { color: var(--color-danger); font-weight: var(--font-medium); }
 </style>
 </head>
 <body>
@@ -870,7 +850,7 @@
   <section class="stats" id="stats"></section>
 
   <section class="split" id="relationship-panels">
-    <article class="panel blue">
+    <article class="panel">
       <h2>People I don't follow back <span class="count" id="nfb-count">0</span></h2>
       <input class="search" id="nfb-search" placeholder="Filter usernames…" autocomplete="off">
       <ul class="list" id="nfb-list"></ul>
@@ -1224,14 +1204,14 @@ function renderStats(s) {
   const c = s.counts;
   stats.innerHTML = "";
   const items = [
-    ["Followers",            c.followers,             "people who follow you",                 "green"],
-    ["Following",            c.following,             "people you follow",                     "blue"],
-    ["I don't follow back",  c.not_followed_back,     "followers I haven't reciprocated",      ""],
-    ["Don't follow me back", c.dont_follow_me_back,   "might drop these",                      ""],
+    ["Followers",            c.followers,             "people who follow you"],
+    ["Following",            c.following,             "people you follow"],
+    ["I don't follow back",  c.not_followed_back,     "followers I haven't reciprocated"],
+    ["Don't follow me back", c.dont_follow_me_back,   "might drop these"],
   ];
-  for (const [label, n, sub, cls] of items) {
+  for (const [label, n, sub] of items) {
     const el = document.createElement("div");
-    el.className = "stat" + (cls ? " " + cls : "");
+    el.className = "stat";
     el.innerHTML = `
       <div class="label">${label}</div>
       <div class="num">${n.toLocaleString()}</div>

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-29
+
+### Changed
+
+- Reworked the web report's visual design: dark, high-contrast theme with a single red accent, sharp-cornered cards, pill-shaped buttons/badges, and a large lowercase display headline.
+- Removed hover-only affordances (card borders, row tints, button color flips) so nothing changes on mouse-over except the `@username` links.
+- `python run.py` (source-mode startup) now enables the same per-account profile backend as the packaged desktop app, so account switching and the legacy-migration prompt work from a plain checkout too.
+
+### Fixed
+
+- `_write_flagged` now reuses the shared atomic-JSON writer instead of a duplicated temp-file-and-rename implementation.
+
 ## [1.1.0] - 2026-07-28
 
 ### Added
