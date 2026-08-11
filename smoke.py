@@ -162,6 +162,22 @@ try:
         f"expected global unilateral_unfollowed [alice_real], got {global_unilateral_t4}"
     print(f"T4b unilateral_unfollowed OK: weeks[-1] = {unilateral_t4} count={wk['counts']['unilateral_unfollowed']} global={global_unilateral_t4}")
 
+    # === T4c: historical unfollowers can be flagged and restored ===
+    for action in ("add", "remove"):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/flag",
+            data=json.dumps({"username": "alice_real", "action": action}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert json.loads(r.read())["ok"] is True
+        flagged_report = json.loads((sb / "dist" / "report.json").read_text())
+        unilateral = {u["username"] for u in flagged_report["unilateral_unfollowed"]}
+        disabled = {u["username"] for u in flagged_report["snapshots"][-1]["disabled_accounts"]}
+        assert ("alice_real" not in unilateral and "alice_real" in disabled) if action == "add" \
+            else ("alice_real" in unilateral and "alice_real" not in disabled)
+    print("T4c historical flag OK: alice moves to disabled and Unflag restores her")
+
     # === T5: list snapshots via GET /snapshots ===
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/snapshots", timeout=5) as r:
         list_resp = json.loads(r.read())

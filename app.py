@@ -257,15 +257,7 @@ def _show_error(title: str, body: str) -> None:
 
 
 def _auto_generate_report() -> None:
-    """ponytail: bundled-app entry-point path. Generate ``dist/report.json``
-    so the window's first paint has something to render. If snapshots exist in
-    ``data/`` we run the full analyze pipeline; otherwise (very first launch,
-    zero Instagram exports yet) we defer to ``run._emit_stub_report`` --
-    shared with FlagHandler._handle_delete so the empty-state stub schema
-    lives in one place. The frontend's renderPanel() calls all early-out
-    safely on empty lists, so a stub is enough for the empty-state UI to
-    render instead of the old 'Make sure you ran `python run.py` first'
-    fallback message."""
+    """Generate the initial report or its empty-state stub."""
     if run._profiles_payload()["active_profile_id"] is None:
         run._emit_stub_report()
         return
@@ -273,7 +265,7 @@ def _auto_generate_report() -> None:
         run.run_analyze(argparse.Namespace(check_disabled=False))
         return
     except SystemExit:
-        pass  # run_analyze raises SystemExit on missing/empty data; fall through.
+        pass
     run._emit_stub_report()
 
 
@@ -307,10 +299,6 @@ def main() -> int:
         return 0
     run.enable_profile_mode(DATA_ROOT, DATA_ROOT / "dist")
 
-    # ponytail: windowed entry point generates dist/report.json itself so
-    # the user doesn't have to run `python run.py` separately before the
-    # bundled UX is useful. _auto_generate_report() handles both the
-    # has-data and empty-data cases.
     _auto_generate_report()
 
     # In-process HTTP server on an OS-picked port. HTTPServer synchronously

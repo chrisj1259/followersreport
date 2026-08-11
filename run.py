@@ -1451,7 +1451,14 @@ def run_analyze(args: argparse.Namespace) -> None:
     ever_f = {r["username"]: r for _, fs, _ in raw_pairs for r in fs}
     ever_g = {r["username"] for _, _, gs in raw_pairs for r in gs}
     latest_f = {r["username"] for r in raw_pairs[-1][1]}
-    global_unilateral = by_ts_desc([ever_f[u] for u in ever_f.keys() - latest_f - ever_g])
+    global_unilateral = by_ts_desc([ever_f[u] for u in ever_f.keys() - latest_f - ever_g - flagged])
+
+    # A flagged historical unfollower is absent from the latest snapshot, so
+    # surface all previously seen flags here to keep Unflag available.
+    ever_records = {r["username"]: r for _, fs, gs in raw_pairs for r in fs + gs}
+    disabled = {u: ever_records[u] for u in flagged & ever_records.keys()}
+    disabled.update({r["username"]: r for r in snapshots[-1]["disabled_accounts"]})
+    snapshots[-1]["disabled_accounts"] = by_ts_desc(list(disabled.values()))
 
     if args.check_disabled:
         for snap in snapshots:

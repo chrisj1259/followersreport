@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-08-11
+
+### Fixed
+
+- Flagging a historical unfollower (someone absent from the latest snapshot) now removes them from "People who unfollowed me…" and surfaces them in "Likely disabled," instead of leaving them stuck in both lists.
+- Unflagging a historical unfollower now correctly returns them to the historical-unfollower list.
+
 ## [1.1.2] - 2026-08-11
 
 ### Fixed

@@ -1122,10 +1122,7 @@ async function createProfile(migrateLegacy = false) {
   }
 }
 
-let _profilesWired = false;
 function wireProfiles() {
-  if (_profilesWired) return;
-  _profilesWired = true;
   $("profile-select").addEventListener("change", (e) => selectProfile(e.target.value));
   $("profile-add").addEventListener("click", () => createProfile(state.profile.legacyNeedsUsername));
 }
@@ -1282,23 +1279,6 @@ function renderUnilateralPanel(data) {
   renderPanel("unilateral-list", "unilateral-count", items, items.length, "unilateral", { flagButton: true });
 }
 
-// ponytail: same disclosure widget for the unilateral section. Defaults to
-// collapsed so the page lands with stats + NFB/DFMB prominent.
-let _unilateralDisclosureWired = false;
-function wireUnilateralDisclosure() {
-  if (_unilateralDisclosureWired) return;
-  _unilateralDisclosureWired = true;
-  const toggle = $("unilateral-toggle");
-  const section = $("unilateral-section");
-  if (!toggle || !section) return;
-  toggle.addEventListener("click", () => {
-    const nextCollapsed = section.dataset.collapsed !== "true";
-    section.dataset.collapsed = nextCollapsed ? "true" : "false";
-    toggle.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
-    toggle.setAttribute("aria-label", nextCollapsed ? "Show people who Unfollowed me that I never followed" : "Hide people who Unfollowed me that I never followed");
-  });
-}
-
 function renderHeader(s) {
   // ponytail: render() guards on null s above, so this is always reached
   // with a valid snapshot. Initial pill HTML stays at "—" until the first
@@ -1324,7 +1304,7 @@ async function toggleFlag(btn, username, action) {
       const t = await r.text().catch(() => "");
       throw new Error(`HTTP ${r.status}: ${t || "flag failed"}`);
     }
-    await refreshAfterMutation();
+    await load(true);
   } catch (e) {
     btn.disabled = false;
     btn.textContent = original;
@@ -1335,13 +1315,7 @@ async function toggleFlag(btn, username, action) {
   }
 }
 
-// ponytail: single delegated handler at the document level so newly-rendered
-// rows don't need a fresh per-row listener. Guarded so load() can call it
-// again on a future refresh without double-wiring.
-let _flagButtonsWired = false;
 function wireFlagButtons() {
-  if (_flagButtonsWired) return;
-  _flagButtonsWired = true;
   document.addEventListener("click", (e) => {
     const btn = e.target.closest("button.flag-btn, button.unflag-btn");
     if (!btn || !btn.dataset.username || btn.disabled) return;
@@ -1351,48 +1325,16 @@ function wireFlagButtons() {
   });
 }
 
-// ponytail: idempotent — `load()` is called once on init, but if a future
-// caller invokes it again, this guard keeps the disclosure toggle's click
-// state from drifting (double-fire → cancel-out bugs are the classic symptom).
-let _disclosureWired = false;
-function wireDisclosure() {
-  if (_disclosureWired) return;
-  _disclosureWired = true;
-  const toggle = $("disabled-toggle");
-  const section = $("disabled-section");
+function wireDisclosure(toggleId, sectionId, showLabel, hideLabel) {
+  const toggle = $(toggleId);
+  const section = $(sectionId);
   if (!toggle || !section) return;
   toggle.addEventListener("click", () => {
     const nextCollapsed = section.dataset.collapsed !== "true";
     section.dataset.collapsed = nextCollapsed ? "true" : "false";
     toggle.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
-    toggle.setAttribute("aria-label", nextCollapsed ? "Show flagged accounts" : "Hide flagged accounts");
+    toggle.setAttribute("aria-label", nextCollapsed ? showLabel : hideLabel);
   });
-}
-
-// ponytail: same disclosure widget for the Manage snapshots section.
-// Defaults to collapsed so the page lands with stats + NFB/DFMB
-// prominent; chevron-click drills into the inventory. Cap of
-// aria-label follows the disabled-section pattern -- "Show X" /
-// "Hide X" toggles in lockstep with aria-expanded for screen readers.
-let _manageDisclosureWired = false;
-function wireManageDisclosure() {
-  if (_manageDisclosureWired) return;
-  _manageDisclosureWired = true;
-  const toggle = $("manage-toggle");
-  const section = $("manage-data-section");
-  if (!toggle || !section) return;
-  toggle.addEventListener("click", () => {
-    const nextCollapsed = section.dataset.collapsed !== "true";
-    section.dataset.collapsed = nextCollapsed ? "true" : "false";
-    toggle.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
-    toggle.setAttribute("aria-label", nextCollapsed ? "Show saved snapshots" : "Hide saved snapshots");
-  });
-}
-
-async function loadSnapshots() {
-  const r = await fetch("/snapshots", { cache: "no-store" });
-  if (!r.ok) throw new Error("failed to load snapshots");
-  return await r.json();
 }
 
 function renderSnapshots(items, warnings) {
@@ -1458,44 +1400,7 @@ function renderSnapshots(items, warnings) {
   });
 }
 
-async function refreshSnapshots() {
-  // ponytail: helper that re-hits /snapshots and re-renders the manage
-  // list. Errors are LOGGED so callers can decide whether to surface
-  // them on a status line; this function itself never throws so it
-  // can't break a caller that already considered refresh a best-effort
-  // operation. Reviewer caught the earlier swallow-the-error-and-keep-
-  // stale-row pattern: the wireSnapshots delete-success branch now
-  // wraps both report + snapshot refresh in a tagged try/catch so the
-  // status line honestly reflects actual state instead of "ok" with a
-  // still-present row.
-  try {
-    const data = await loadSnapshots();
-    renderSnapshots(data.snapshots || [], data.warnings || []);
-  } catch (e) {
-    console.error("snapshots refresh failed:", e);
-  }
-}
-
-// ponytail: combined report.json + snapshot-list refresh so a delete
-// handler can await a single promise and surface a single honest
-// status-line message on partial failure. Render order: report first
-// (so panels repaint before the manage list, so the user sees the
-// new stats reflecting current disk state immediately).
-async function refreshAfterMutation() {
-  const rr = await fetch("/dist/report.json?v=" + Date.now(), { cache: "no-store" });
-  if (!rr.ok) throw new Error("failed to refresh report.json: HTTP " + rr.status);
-  state.data = await rr.json();
-  render();
-  const sr = await fetch("/snapshots", { cache: "no-store" });
-  if (!sr.ok) throw new Error("failed to refresh snapshot list: HTTP " + sr.status);
-  const sd = await sr.json();
-  renderSnapshots(sd.snapshots || [], sd.warnings || []);
-}
-
-let _snapshotsWired = false;
 function wireSnapshots() {
-  if (_snapshotsWired) return;
-  _snapshotsWired = true;
   const status = $("manage-status");
   document.addEventListener("click", async (e) => {
     const btn = e.target.closest("button.delete-btn");
@@ -1546,7 +1451,7 @@ function wireSnapshots() {
       status.className = "manage-status ok";
       status.textContent = `Deleted ${date}. Refreshing report\u2026`;
       try {
-        await refreshAfterMutation();
+        await load(true);
       } catch (refreshErr) {
         // ponytail: refresh failure is surfaced on manage-status instead
         // of the optimistic-success state from two lines up; row is
@@ -1611,10 +1516,7 @@ function render() {
   renderDisabledPanel(s);
 }
 
-let _searchWired = false;
 function wireSearch() {
-  if (_searchWired) return;
-  _searchWired = true;
   const wire = (inputId, key) => {
     const el = $(inputId);
     el.addEventListener("input", (e) => {
@@ -1637,13 +1539,6 @@ async function load(strictSnapshots = false) {
   const r = await fetch("/dist/report.json?v=" + Date.now(), { cache: "no-store" });
   if (!r.ok) throw new Error("failed to load report.json");
   state.data = await r.json();
-  wireSearch();
-  wireFlagButtons();
-  wireDisclosure();
-  wireUnilateralDisclosure();
-  wireManageDisclosure();
-  wireImport();
-  wireSnapshots();
   render();
   // ponytail: refresh snapshot inventory alongside the report. Errors
   // are logged but NOT raised to the page-load .catch -- /snapshots
@@ -1670,11 +1565,7 @@ function formatDateDash(input) {
   input.value = v.slice(0, 10);
 }
 
-let _importWired = false;
 function wireImport() {
-  if (_importWired) return;
-  _importWired = true;
-
   const form = $("import-form");
   const dateEl = $("import-date");
   const followersEl = $("import-followers");
@@ -1747,9 +1638,14 @@ function wireImport() {
 async function bootstrap() {
   wireSearch();
   wireFlagButtons();
-  wireDisclosure();
-  wireUnilateralDisclosure();
-  wireManageDisclosure();
+  wireDisclosure("disabled-toggle", "disabled-section", "Show flagged accounts", "Hide flagged accounts");
+  wireDisclosure(
+    "unilateral-toggle",
+    "unilateral-section",
+    "Show people who Unfollowed me that I never followed",
+    "Hide people who Unfollowed me that I never followed",
+  );
+  wireDisclosure("manage-toggle", "manage-data-section", "Show saved snapshots", "Hide saved snapshots");
   wireImport();
   wireSnapshots();
   wireProfiles();
