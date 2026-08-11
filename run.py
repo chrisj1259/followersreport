@@ -628,8 +628,8 @@ def read_snapshot(folder: Path, flagged: set[str]) -> tuple[dict, list[dict], li
     'following_v2.json', 'relationships_followers.json', etc.
 
     All accounts in `flagged` (data/disabledaccounts.json) are pulled out of
-    every display bucket and surfaced in 'disabled_accounts' instead. Raw
-    follower/following lists are returned alongside the summary.
+    every relationship panel and surfaced in 'disabled_accounts' instead.
+    Headline totals and returned lists still reflect the unfiltered export.
     """
     buckets: dict[str, list[dict]] = {"followers": [], "following": []}
     for f in sorted(folder.glob("*.json")):
@@ -644,32 +644,30 @@ def read_snapshot(folder: Path, flagged: set[str]) -> tuple[dict, list[dict], li
         # ponytail: unrecognized exports are silently ignored — better than
         # raising on Instagram's ever-growing export surface.
 
-    flagged_records: list[dict] = []
-
+    raw: dict[str, list[dict]] = {"followers": [], "following": []}
+    flagged_by_username: dict[str, dict] = {}
     for k, recs in buckets.items():
-        if not recs:
-            continue
-        kept, flagged_here = [], []
-        seen: set[str] = set()
-        for r in recs:
-            uname = r["username"]
-            if uname in seen:
-                continue
-            seen.add(uname)
-            (flagged_here if uname in flagged else kept).append(r)
-        buckets[k] = kept
-        flagged_records.extend(flagged_here)
+        unique = list(by_username(recs).values())
+        raw[k] = unique
+        buckets[k] = [r for r in unique if r["username"] not in flagged]
+        for r in unique:
+            if r["username"] in flagged:
+                flagged_by_username.setdefault(r["username"], r)
 
+    raw_fset, raw_gset = to_set(raw["followers"]), to_set(raw["following"])
     fset, gset = to_set(buckets["followers"]), to_set(buckets["following"])
     by_u_f = by_username(buckets["followers"])
     by_u_g = by_username(buckets["following"])
+    flagged_records = list(flagged_by_username.values())
 
     summary = {
         "date_folder": folder.name,
         "date_iso": parse_folder_date(folder.name).date().isoformat(),
         "counts": {
-            "followers":          len(fset),
-            "following":          len(gset),
+            "followers":          len(raw_fset),
+            "following":          len(raw_gset),
+            "active_followers":   len(fset),
+            "active_following":   len(gset),
             "not_followed_back":  len(fset - gset),
             "dont_follow_me_back":len(gset - fset),
             "mutuals":            len(fset & gset),
@@ -680,10 +678,7 @@ def read_snapshot(folder: Path, flagged: set[str]) -> tuple[dict, list[dict], li
         "mutuals":             [by_u_f[u] for u in (fset & gset)],
         "disabled_accounts":   by_ts_desc(flagged_records),
     }
-    # ponytail: return raw (unfiltered) follower + following lists so analytics
-    # consumers see actual full-account membership regardless of the manual
-    # flag file. (Local-only consumers today — no UI uses this; cheap to keep.)
-    return summary, buckets["followers"], buckets["following"]
+    return summary, raw["followers"], raw["following"]
 
 
 def fold_pair(prev: tuple[str, list[dict], list[dict]],
@@ -880,8 +875,9 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             new_list = unflag(username) if action == "remove" else add_flagged(username)
+            _refresh_active_report()
         except OSError as e:
-            self.send_error(500, f"could not write disabledaccounts.json: {e}")
+            self.send_error(500, f"could not refresh flagged accounts: {e}")
             return
         self._send_json(200, {"ok": True, "username": username.lower(),
                               "action": action, "total": len(new_list)})

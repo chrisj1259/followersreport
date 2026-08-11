@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-08-11
+
+### Fixed
+
+- Headline follower/following counts now reflect the raw export totals instead of silently subtracting flagged accounts; active-after-flag counts are shown separately.
+- Unflagging a mutual account no longer misroutes it into "don't follow me back" — the report is regenerated and reloaded instead of being guessed client-side in JavaScript.
+- Flagging/unflagging now rebuilds and reloads the report so cards and lists stay consistent.
+
 ## [1.1.1] - 2026-07-29
 
 ### Changed

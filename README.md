@@ -132,6 +132,11 @@ If an older installation already has data, the app asks which Instagram username
 
 The report refreshes automatically.
 
+Follower and following cards count the unique records in that export. Instagram's
+live profile totals can differ because exports are point-in-time downloads and may
+still include disabled accounts; the card subtitle shows the total after your
+manual disabled-account flags.
+
 ### Flag suspicious accounts
 
 Hover any row in **People I don't follow back** or **People who don't follow me back** and click **Flag**. The handle moves into the **Likely disabled / deactivated** panel and is excluded from active lists. Click **Unflag** to restore it. Flagged handles are stored in `data/disabledaccounts.json` (CLI) or the active profile's `disabledaccounts.json` (installed app).

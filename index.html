@@ -1203,9 +1203,12 @@ function renderStats(s) {
   const stats = $("stats");
   const c = s.counts;
   stats.innerHTML = "";
+  const activeLabel = (active, total) => active === undefined || active === total
+    ? "records in this export"
+    : `${active.toLocaleString()} active after flags`;
   const items = [
-    ["Followers",            c.followers,             "people who follow you"],
-    ["Following",            c.following,             "people you follow"],
+    ["Followers",            c.followers,             activeLabel(c.active_followers, c.followers)],
+    ["Following",            c.following,             activeLabel(c.active_following, c.following)],
     ["I don't follow back",  c.not_followed_back,     "followers I haven't reciprocated"],
     ["Don't follow me back", c.dont_follow_me_back,   "might drop these"],
   ];
@@ -1321,52 +1324,7 @@ async function toggleFlag(btn, username, action) {
       const t = await r.text().catch(() => "");
       throw new Error(`HTTP ${r.status}: ${t || "flag failed"}`);
     }
-    const s = latestSnapshot();
-    if (!s) throw new Error("no snapshot loaded");
-    const unilateralSource = state.data.unilateral_unfollowed || state.data.weeks?.at(-1)?.unilateral_unfollowed || [];
-    const rec =
-      (s.dont_follow_me_back || []).find((x) => x.username === username) ||
-      (s.not_followed_back  || []).find((x) => x.username === username) ||
-      (s.disabled_accounts  || []).find((x) => x.username === username) ||
-      unilateralSource.find((x) => x.username === username);
-    if (!rec) throw new Error("row vanished from client state");
-    if (action === "add") {
-      for (const k of ["not_followed_back", "dont_follow_me_back"]) {
-        s[k] = (s[k] || []).filter((x) => x.username !== username);
-      }
-      s.disabled_accounts = (s.disabled_accounts || []).filter((x) => x.username !== username);
-      if (state.data.unilateral_unfollowed) {
-        state.data.unilateral_unfollowed = state.data.unilateral_unfollowed.filter((x) => x.username !== username);
-      }
-      s.disabled_accounts.push(rec);
-      // ponytail: open the disclosure so the user sees the move immediately.
-      // Even if section.hidden was still true when we got here (e.g. this was
-      // user.zero flagged so far), flip the disclosure now — renderDisabledPanel
-      // will unhide the section on the next render since disabled_accounts is
-      // populated, and we want both transitions (uncollapse + unhide) in one.
-      const section = $("disabled-section");
-      const toggle = $("disabled-toggle");
-      if (section && section.dataset.collapsed === "true") {
-        section.dataset.collapsed = "false";
-        toggle.setAttribute("aria-expanded", "true");
-        toggle.setAttribute("aria-label", "Hide flagged accounts");
-      }
-    } else {
-      s.disabled_accounts = (s.disabled_accounts || []).filter((x) => x.username !== username);
-      // ponytail: on unflag we don't know the original bucket — push back to
-      // DFMB (the most common source of a manual flag). Next analyze run will
-      // reclassify it from data/disabledaccounts.json.
-      s.dont_follow_me_back = (s.dont_follow_me_back || []).filter((x) => x.username !== username).concat([rec]);
-    }
-    s.counts.dont_follow_me_back = s.dont_follow_me_back.length;
-    s.counts.not_followed_back  = s.not_followed_back.length;
-    // ponytail: counts.disabled and counts.flagged are kept equal here — the
-    // server populates them identically in read_snapshot. A split would only
-    // make sense if a stale data/disabledaccounts.json entry didn't match a
-    // current DFMB row, which the next analyze pass reconciles anyway.
-    s.counts.disabled           = s.disabled_accounts.length;
-    s.counts.flagged            = s.disabled_accounts.length;
-    render();
+    await refreshAfterMutation();
   } catch (e) {
     btn.disabled = false;
     btn.textContent = original;

@@ -69,15 +69,20 @@ print("T2 persistence OK: re-run reproduces identical report.json")
 
 # === T3: flag pipeline -- flag zelda, expect DFMB -> disabled_accounts ===
 run.add_flagged("zelda_real")
+run.add_flagged("bob_real")
 flag_list = json.loads((sb / "disabledaccounts.json").read_text())
-assert "zelda_real" in flag_list, flag_list
+assert {"bob_real", "zelda_real"}.issubset(flag_list), flag_list
 (sb / "dist" / "report.json").unlink()
 run.run_analyze(argparse.Namespace(check_disabled=False))
 rep3 = json.loads((sb / "dist" / "report.json").read_text())
 dfmb3 = sorted(u["username"] for u in rep3["snapshots"][0]["dont_follow_me_back"])
 disabled3 = sorted(u["username"] for u in rep3["snapshots"][0]["disabled_accounts"])
 assert "zelda_real" not in dfmb3, dfmb3
-assert "zelda_real" in disabled3, disabled3
+assert disabled3 == ["bob_real", "zelda_real"], disabled3
+assert rep3["snapshots"][0]["counts"]["followers"] == 3, rep3["snapshots"][0]["counts"]
+assert rep3["snapshots"][0]["counts"]["following"] == 4, rep3["snapshots"][0]["counts"]
+assert rep3["snapshots"][0]["counts"]["active_followers"] == 2, rep3["snapshots"][0]["counts"]
+assert rep3["snapshots"][0]["counts"]["active_following"] == 2, rep3["snapshots"][0]["counts"]
 print(f"T3 flag pipeline OK: zelda moved DFMB->disabled: dfmb={dfmb3} disabled={disabled3}")
 
 # === T4: end-to-end HTTP /import through FlagHandler ===
@@ -269,6 +274,14 @@ try:
     request_json(profile_port, "/profiles", {"action": "create", "name": "ALPHA.ONE"}, expected=400)
     request_json(profile_port, "/profiles", {"action": "select", "profile_id": "../unknown"}, expected=404)
     import_snapshot(profile_port, date_str, "alpha_follower", "alpha_following")
+    request_json(profile_port, "/flag", {"username": "alpha_follower", "action": "add"})
+    alpha_flagged = json.loads((desktop / "dist" / "report.json").read_text())["snapshots"][0]
+    assert alpha_flagged["not_followed_back"] == []
+    assert alpha_flagged["disabled_accounts"][0]["username"] == "alpha_follower"
+    request_json(profile_port, "/flag", {"username": "alpha_follower", "action": "remove"})
+    alpha_unflagged = json.loads((desktop / "dist" / "report.json").read_text())["snapshots"][0]
+    assert alpha_unflagged["not_followed_back"][0]["username"] == "alpha_follower"
+    assert alpha_unflagged["dont_follow_me_back"][0]["username"] == "alpha_following"
     request_json(profile_port, "/flag", {"username": "alpha_disabled", "action": "add"})
 
     beta = request_json(profile_port, "/profiles", {"action": "create", "name": "beta_two"})
