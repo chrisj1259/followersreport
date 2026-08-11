@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-11
+
+### Added
+
+- A new **Recheck statuses** button checks every saved disabled-account flag through the existing authenticated Scrapling session. It restores only profiles Instagram positively identifies as active; blocked or unclear responses preserve their flags.
+- Followers and Following cards now show Instagram's live profile totals from one cached authenticated check, while retaining the downloaded-export totals underneath.
+
 ## [1.1.3] - 2026-08-11
 
 ### Fixed

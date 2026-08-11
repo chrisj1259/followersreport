@@ -85,6 +85,21 @@ assert rep3["snapshots"][0]["counts"]["active_followers"] == 2, rep3["snapshots"
 assert rep3["snapshots"][0]["counts"]["active_following"] == 2, rep3["snapshots"][0]["counts"]
 print(f"T3 flag pipeline OK: zelda moved DFMB->disabled: dfmb={dfmb3} disabled={disabled3}")
 
+# === T3b: saved disabled flags recover only on a positive active verdict ===
+run.add_flagged("mystery_real")
+real_looks_disabled = run.looks_disabled
+run.looks_disabled = lambda username, timeout=4.0: {
+    "bob_real": False,
+    "zelda_real": True,
+    "mystery_real": None,
+}[username]
+try:
+    assert run.recheck_flagged_accounts_by_network() == ["bob_real"]
+finally:
+    run.looks_disabled = real_looks_disabled
+assert json.loads((sb / "disabledaccounts.json").read_text()) == ["mystery_real", "zelda_real"]
+print("T3b saved-flag recheck OK: active removed; disabled/unclear preserved")
+
 # === T4: end-to-end HTTP /import through FlagHandler ===
 httpd = run._run_server(0, run.FlagHandler)
 port = httpd.server_address[1]
@@ -177,6 +192,21 @@ try:
         assert ("alice_real" not in unilateral and "alice_real" in disabled) if action == "add" \
             else ("alice_real" in unilateral and "alice_real" not in disabled)
     print("T4c historical flag OK: alice moves to disabled and Unflag restores her")
+
+    # === T4d: one-click status recheck refreshes flags and the report ===
+    real_authenticated_statuses = run._authenticated_statuses
+    run._authenticated_statuses = lambda usernames: {
+        username: False if username == "zelda_real" else None for username in usernames
+    }
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/recheck-disabled", data=b"")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            recheck = json.loads(r.read())
+    finally:
+        run._authenticated_statuses = real_authenticated_statuses
+    assert recheck["ok"] is True and recheck["reenabled"] == ["zelda_real"], recheck
+    assert json.loads((sb / "disabledaccounts.json").read_text()) == ["mystery_real"]
+    print(f"T4d POST /recheck-disabled OK: {recheck}")
 
     # === T5: list snapshots via GET /snapshots ===
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/snapshots", timeout=5) as r:
@@ -271,6 +301,11 @@ def import_snapshot(port, date, follower, following):
 
 desktop = sb / "desktop"
 run.enable_profile_mode(desktop, desktop / "dist")
+live_count_calls = []
+real_profile_counts = run._authenticated_profile_counts
+run._authenticated_profile_counts = lambda username: (
+    live_count_calls.append(username) or {"followers": 641, "following": 522}
+)
 profile_httpd = run._run_server(0, run.FlagHandler)
 profile_port = profile_httpd.server_address[1]
 threading.Thread(target=profile_httpd.serve_forever, daemon=True).start()
@@ -290,6 +325,10 @@ try:
     request_json(profile_port, "/profiles", {"action": "create", "name": "ALPHA.ONE"}, expected=400)
     request_json(profile_port, "/profiles", {"action": "select", "profile_id": "../unknown"}, expected=404)
     import_snapshot(profile_port, date_str, "alpha_follower", "alpha_following")
+    live = request_json(profile_port, "/live-counts")
+    assert live == {"ok": True, "counts": {"followers": 641, "following": 522}}, live
+    assert request_json(profile_port, "/live-counts") == live
+    assert live_count_calls == ["alpha.one"], live_count_calls
     request_json(profile_port, "/flag", {"username": "alpha_follower", "action": "add"})
     alpha_flagged = json.loads((desktop / "dist" / "report.json").read_text())["snapshots"][0]
     assert alpha_flagged["not_followed_back"] == []
@@ -327,6 +366,7 @@ try:
 finally:
     profile_httpd.shutdown()
     profile_httpd.server_close()
+    run._authenticated_profile_counts = real_profile_counts
 
 
 # === T9: legacy migration copies safely, prefers root flags, and is idempotent ===

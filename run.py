@@ -45,6 +45,7 @@ ponytail: bind the http server to 127.0.0.1 (IPv4 loopback) — never expose the
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import errno
 import functools
 import http.server
@@ -53,6 +54,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -63,6 +65,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
+RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)).resolve()
 ROOT = Path(__file__).parent.resolve()
 DATA = ROOT / "data"
 OUT = ROOT / "dist" / "report.json"
@@ -71,6 +74,7 @@ DEFAULT_PORT = 8000
 PROFILE_ROOT: Path | None = None
 PROFILE_MANIFEST: Path | None = None
 PROFILE_OUT_DIR: Path | None = None
+LIVE_PROFILE_COUNTS: dict[str, dict[str, int] | None] = {}
 
 
 def _set_data_paths(*, data_dir: Path, out_dir: Path, disabled_file: Path) -> None:
@@ -173,11 +177,12 @@ def _activate_profile(profile_id: str | None) -> None:
 
 
 def enable_profile_mode(storage_root: Path, out_dir: Path) -> None:
-    """Enable desktop-only profile storage. CLI never calls this."""
+    """Enable per-account storage."""
     global PROFILE_ROOT, PROFILE_MANIFEST, PROFILE_OUT_DIR
     PROFILE_ROOT = storage_root / "profiles"
     PROFILE_MANIFEST = storage_root / "profiles.json"
     PROFILE_OUT_DIR = out_dir
+    LIVE_PROFILE_COUNTS.clear()
     PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
     _set_data_paths(data_dir=PROFILE_ROOT, out_dir=out_dir,
                     disabled_file=PROFILE_ROOT / ".inactive-disabledaccounts.json")
@@ -418,6 +423,95 @@ def looks_disabled(username: str, timeout: float = 8.0) -> bool | None:
     if 'property="og:description"' in body:
         return False
     return None
+
+
+def _scrapling_result(arguments: list[str], marker: str, timeout: int) -> dict | None:
+    """Run the small helper inside the existing logged-in Scrapling project."""
+    project = Path(os.environ.get(
+        "INSTAGRAM_SCRAPLING_PROJECT",
+        r"D:\vscode\cargeneratormasterfolder\carleadgeneratorscrapling",
+    ))
+    python = project / "venv" / "Scripts" / "python.exe"
+    helper = RESOURCE_ROOT / "ig_status_helper.py"
+    if not (python.is_file() and (project / "ig_client.py").is_file() and helper.is_file()):
+        return None
+    try:
+        result = subprocess.run(
+            [str(python), str(helper), str(project), *arguments],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+        marker = next(
+            line.removeprefix(marker)
+            for line in reversed(result.stdout.splitlines())
+            if line.startswith(marker)
+        )
+        payload = json.loads(marker)
+        if result.returncode or not isinstance(payload, dict):
+            raise ValueError("checker failed")
+        return payload
+    except (OSError, subprocess.TimeoutExpired, StopIteration, ValueError, json.JSONDecodeError):
+        print("warning: authenticated Instagram checker unavailable", file=sys.stderr)
+        return None
+
+
+def _authenticated_statuses(usernames: list[str]) -> dict[str, bool | None] | None:
+    """Use the existing logged-in Scrapling project when it is available."""
+    statuses = _scrapling_result(usernames, "IFR_STATUS_JSON=", max(90, 30 + 20 * len(usernames)))
+    if statuses is None:
+        return None
+    return {u: False if statuses.get(u) == "active" else None for u in usernames}
+
+
+def _authenticated_profile_counts(username: str) -> dict[str, int] | None:
+    counts = _scrapling_result(["counts", username], "IFR_COUNTS_JSON=", 90)
+    if counts is None:
+        return None
+    if all(isinstance(counts.get(k), int) and counts[k] >= 0 for k in ("followers", "following")):
+        return {"followers": counts["followers"], "following": counts["following"]}
+    return None
+
+
+def _live_profile_counts() -> dict[str, int] | None:
+    payload = _profiles_payload()
+    active = payload["active_profile_id"]
+    if active is None:
+        return None
+    if active not in LIVE_PROFILE_COUNTS:
+        profile = next(p for p in payload["profiles"] if p.get("id") == active)
+        LIVE_PROFILE_COUNTS[active] = _authenticated_profile_counts(profile["name"])
+    return LIVE_PROFILE_COUNTS[active]
+
+
+def recheck_flagged_accounts_by_network(*, timeout: float = 4.0,
+                                         authenticated: bool = False) -> list[str]:
+    """Unflag saved handles only when Instagram positively shows an active profile."""
+    flagged = _read_flagged()
+    if not flagged:
+        return []
+
+    usernames = sorted(flagged)
+    if authenticated:
+        statuses = _authenticated_statuses(usernames)
+        verdicts = [statuses[u] for u in usernames] if statuses is not None else [None] * len(usernames)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(usernames))) as pool:
+            verdicts = list(pool.map(lambda u: looks_disabled(u, timeout), usernames))
+
+    reenabled = [u for u, verdict in zip(usernames, verdicts) if verdict is False]
+    for username, verdict in zip(usernames, verdicts):
+        status = "re-enabled" if verdict is False else ("disabled" if verdict is True else "unchanged")
+        print(f"  [saved flag] @{username}: {status}", flush=True)
+    if reenabled:
+        _write_flagged(flagged - set(reenabled))
+        print(f"restored {len(reenabled)} re-enabled account(s)", flush=True)
+    return reenabled
 
 
 def filter_disabled_accounts_by_network(snapshot: dict, *, delay: float = 0.25) -> None:
@@ -762,7 +856,7 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/profiles":
             self._handle_profiles()
             return
-        if self.path in ("/flag", "/import", "/delete") and self._reject_without_profile():
+        if self.path in ("/flag", "/import", "/delete", "/recheck-disabled") and self._reject_without_profile():
             return
         if self.path == "/flag":
             self._handle_flag()
@@ -770,6 +864,8 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_import()
         elif self.path == "/delete":
             self._handle_delete()
+        elif self.path == "/recheck-disabled":
+            self._handle_recheck_disabled()
         else:
             self.send_error(404, "no such endpoint")
 
@@ -791,6 +887,14 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             if self._reject_without_profile():
                 return
             self._handle_list_snapshots()
+            return
+        if self.path == "/live-counts":
+            if self._reject_without_profile():
+                return
+            try:
+                self._send_json(200, {"ok": True, "counts": _live_profile_counts()})
+            except OSError as e:
+                self.send_error(500, f"could not check live counts: {e}")
             return
         super().do_GET()
 
@@ -881,6 +985,22 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             return
         self._send_json(200, {"ok": True, "username": username.lower(),
                               "action": action, "total": len(new_list)})
+
+    def _handle_recheck_disabled(self) -> None:
+        """POST /recheck-disabled -- refresh every saved flag in one pass."""
+        checked = len(_read_flagged())
+        try:
+            reenabled = recheck_flagged_accounts_by_network(authenticated=True)
+            _refresh_active_report()
+        except OSError as e:
+            self.send_error(500, f"could not refresh disabled accounts: {e}")
+            return
+        self._send_json(200, {
+            "ok": True,
+            "checked": checked,
+            "reenabled": reenabled,
+            "remaining": len(_read_flagged()),
+        })
 
     def _handle_list_snapshots(self) -> None:
         """GET /snapshots -- return every dated folder on disk as JSON.

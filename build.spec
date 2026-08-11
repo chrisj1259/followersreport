@@ -14,8 +14,8 @@ Notes:
       --onedir removes the 5-second temp-dir extraction lag on each launch.
     * windowed -- no conhost window flashes at the user; pywebview owns the UI.
     * we explicitly bundle index.html as data (PyInstaller's Analysis picks
-      up pure-Python imports of run automatically, but a runtime-read asset
-      like index.html must be declared).
+      up pure-Python imports of run automatically, but runtime-read assets
+      like index.html and ig_status_helper.py must be declared).
     * we don't declare sys.platform / os-specific hidden imports -- pywebview
       is the only third-party dep and its setup.py already covers Windows.
 """
@@ -28,7 +28,7 @@ a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[('index.html', '.')],
+    datas=[('index.html', '.'), ('ig_status_helper.py', '.')],
     hiddenimports=[
         'run',
         # ponytail: pywebview defers the Windows backend (winforms) until

@@ -344,6 +344,12 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    flex-wrap: wrap;
+  }
+  section.disabled-section .disabled-heading {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
   }
   section.disabled-section h2 .count {
     display: inline-flex;
@@ -357,6 +363,20 @@
     font-size: 11px;
     font-weight: var(--font-medium);
   }
+  section.disabled-section .recheck-btn {
+    appearance: none;
+    padding: 6px 12px;
+    border: var(--border-normal) solid rgba(255, 255, 255, 0.3);
+    border-radius: var(--pill);
+    background: transparent;
+    color: var(--text-invert);
+    font: inherit;
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: normal;
+    cursor: pointer;
+  }
+  section.disabled-section .recheck-btn:disabled { opacity: 0.5; cursor: wait; }
   section.disabled-section .explainer {
     color: rgba(255, 255, 255, 0.6);
     font-size: 12px;
@@ -897,8 +917,11 @@
 
   <section id="disabled-section" class="disabled-section" hidden data-collapsed="true">
     <h2>
-      Likely disabled / deactivated
-      <span class="count" id="disabled-count">0</span>
+      <span class="disabled-heading">
+        Likely disabled / deactivated
+        <span class="count" id="disabled-count">0</span>
+      </span>
+      <button class="recheck-btn" id="recheck-disabled" type="button">Recheck statuses</button>
     </h2>
     <button class="disclosure-toggle" id="disabled-toggle" type="button"
             aria-expanded="false" aria-controls="disabled-body"
@@ -1002,6 +1025,7 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   data: null,
+  liveCounts: null,
   filters: { nfb: "", dfmb: "", disabled: "", unilateral: "" },
   profile: { enabled: false, activeId: null, profiles: [], legacyNeedsUsername: false, busy: 0 },
 };
@@ -1049,8 +1073,10 @@ async function refreshProfiles() {
   const text = await r.text();
   if (!r.ok) throw new Error(text || `HTTP ${r.status}`);
   const data = JSON.parse(text);
+  const previousId = state.profile.activeId;
   state.profile.enabled = !!data.profile_mode;
   state.profile.activeId = data.active_profile_id || null;
+  if (previousId !== state.profile.activeId) state.liveCounts = null;
   state.profile.profiles = data.profiles || [];
   state.profile.legacyNeedsUsername = !!data.legacy_needs_username;
   renderProfileControls();
@@ -1070,6 +1096,7 @@ async function postProfile(body) {
 
 function resetProfileView() {
   state.data = null;
+  state.liveCounts = null;
   for (const key of Object.keys(state.filters)) state.filters[key] = "";
   for (const id of ["nfb-search", "dfmb-search", "disabled-search", "unilateral-search"]) $(id).value = "";
   for (const id of ["import-status", "manage-status"]) { $(id).textContent = ""; $(id).className = id; }
@@ -1200,12 +1227,17 @@ function renderStats(s) {
   const stats = $("stats");
   const c = s.counts;
   stats.innerHTML = "";
-  const activeLabel = (active, total) => active === undefined || active === total
-    ? "records in this export"
-    : `${active.toLocaleString()} active after flags`;
+  const liveValue = (key) => Number.isInteger(state.liveCounts?.[key]) ? state.liveCounts[key] : c[key];
+  const liveLabel = (key) => {
+    if (!Number.isInteger(state.liveCounts?.[key])) return "records in this export";
+    const difference = c[key] - state.liveCounts[key];
+    return difference > 0
+      ? `${c[key].toLocaleString()} in export · ${difference.toLocaleString()} unavailable/stale`
+      : `${c[key].toLocaleString()} in downloaded export`;
+  };
   const items = [
-    ["Followers",            c.followers,             activeLabel(c.active_followers, c.followers)],
-    ["Following",            c.following,             activeLabel(c.active_following, c.following)],
+    ["Followers",            liveValue("followers"), liveLabel("followers")],
+    ["Following",            liveValue("following"), liveLabel("following")],
     ["I don't follow back",  c.not_followed_back,     "followers I haven't reciprocated"],
     ["Don't follow me back", c.dont_follow_me_back,   "might drop these"],
   ];
@@ -1219,6 +1251,18 @@ function renderStats(s) {
     `;
     stats.appendChild(el);
   }
+}
+
+async function refreshLiveCounts() {
+  if (!state.profile.activeId || !latestSnapshot()) return;
+  const profileId = state.profile.activeId;
+  const r = await fetch("/live-counts", { cache: "no-store" });
+  if (!r.ok) throw new Error(`live counts: HTTP ${r.status}`);
+  const result = await r.json();
+  if (profileId !== state.profile.activeId) return;
+  state.liveCounts = result.counts || null;
+  const snapshot = latestSnapshot();
+  if (snapshot) renderStats(snapshot);
 }
 
 function renderPanel(listId, countId, records, total, filterKey, rowOpts = {}) {
@@ -1311,6 +1355,31 @@ async function toggleFlag(btn, username, action) {
     console.error("flag POST failed:", e);
     alert(`Could not ${action === "add" ? "flag" : "unflag"} @${username}: ${e.message}`);
   } finally {
+    setProfileBusy(false);
+  }
+}
+
+async function recheckDisabled() {
+  const btn = $("recheck-disabled");
+  if (btn.disabled || state.profile.busy) return;
+  setProfileBusy(true);
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  setProfileStatus("Checking saved account statuses…");
+  try {
+    const r = await fetch("/recheck-disabled", { method: "POST" });
+    const text = await r.text();
+    if (!r.ok) throw new Error(text || `HTTP ${r.status}`);
+    const result = JSON.parse(text);
+    await load(true);
+    setProfileStatus(result.reenabled.length
+      ? `Restored ${result.reenabled.length} re-enabled account${result.reenabled.length === 1 ? "" : "s"}.`
+      : `Checked ${result.checked} account${result.checked === 1 ? "" : "s"}; no confirmed changes.`);
+  } catch (e) {
+    setProfileStatus(`Status check failed: ${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Recheck statuses";
     setProfileBusy(false);
   }
 }
@@ -1553,6 +1622,7 @@ async function load(strictSnapshots = false) {
     console.error("snapshots load failed:", e);
     if (strictSnapshots) throw e;
   }
+  refreshLiveCounts().catch((e) => console.error("live count check failed:", e));
 }
 
 // ponytail: only digits survive, then dashes slot in after positions 2 and 5.
@@ -1638,6 +1708,7 @@ function wireImport() {
 async function bootstrap() {
   wireSearch();
   wireFlagButtons();
+  $("recheck-disabled").addEventListener("click", recheckDisabled);
   wireDisclosure("disabled-toggle", "disabled-section", "Show flagged accounts", "Hide flagged accounts");
   wireDisclosure(
     "unilateral-toggle",
