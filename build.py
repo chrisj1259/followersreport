@@ -3,7 +3,7 @@
 the app with PyInstaller, then compile the Inno Setup installer.
 
 Run:
-    pip install pywebview pyinstaller
+    pip install pywebview pyinstaller "scrapling[fetchers]"
     python build.py
 
 Output:
@@ -11,8 +11,8 @@ Output:
     dist/InstagramFollowerReport/InstagramFollowerReport.exe   (PyInstaller --onedir)
     Output/InstagramFollowerReport-Setup-v<version>.exe       (final installer — ship this)
 
-Pure-stdlib Python for the orchestration; the only third-party deps are
-PyInstaller and webview themselves which the actual build needs.
+The orchestration is stdlib-only; PyInstaller, pywebview, and Scrapling's
+fetcher extra are build-time inputs bundled into the installed app.
 """
 from __future__ import annotations
 

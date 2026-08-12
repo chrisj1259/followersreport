@@ -37,11 +37,11 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pywebview pyinstaller
+          pip install pywebview pyinstaller "scrapling[fetchers]"
 
       - name: Run tests
         run: |
-          python -m unittest test_updates.py
+          python -m unittest
           python smoke.py
 
       - name: Set build version
@@ -82,8 +82,12 @@ jobs:
         run: |
           NOTES=""
           if [[ -f CHANGELOG.md ]]; then
-            # Grab the first ## section body (everything between the first and second ## headers)
-            NOTES=$(awk '/^## / { if (p) exit; p=1; next } p' CHANGELOG.md | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
+            VERSION="${GITHUB_REF_NAME#v}"
+            NOTES=$(awk -v version="$VERSION" '
+              index($0, "## [" version "]") == 1 { p=1; next }
+              p && /^## / { exit }
+              p
+            ' CHANGELOG.md | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
           fi
           if [[ -z "$NOTES" ]]; then
             NOTES="Automated release from commit ${{ github.sha }}."

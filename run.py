@@ -74,7 +74,10 @@ DEFAULT_PORT = 8000
 PROFILE_ROOT: Path | None = None
 PROFILE_MANIFEST: Path | None = None
 PROFILE_OUT_DIR: Path | None = None
-LIVE_PROFILE_COUNTS: dict[str, dict[str, int] | None] = {}
+LIVE_PROFILE_COUNTS: dict[str, dict[str, int]] = {}
+IG_SESSION_DIR: Path | None = None
+IG_SESSION_MARKER = ".authenticated"
+_LOGIN_PROC: subprocess.Popen | None = None
 
 
 def _set_data_paths(*, data_dir: Path, out_dir: Path, disabled_file: Path) -> None:
@@ -178,10 +181,11 @@ def _activate_profile(profile_id: str | None) -> None:
 
 def enable_profile_mode(storage_root: Path, out_dir: Path) -> None:
     """Enable per-account storage."""
-    global PROFILE_ROOT, PROFILE_MANIFEST, PROFILE_OUT_DIR
+    global PROFILE_ROOT, PROFILE_MANIFEST, PROFILE_OUT_DIR, IG_SESSION_DIR
     PROFILE_ROOT = storage_root / "profiles"
     PROFILE_MANIFEST = storage_root / "profiles.json"
     PROFILE_OUT_DIR = out_dir
+    IG_SESSION_DIR = storage_root / "ig-session"
     LIVE_PROFILE_COUNTS.clear()
     PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
     _set_data_paths(data_dir=PROFILE_ROOT, out_dir=out_dir,
@@ -425,52 +429,135 @@ def looks_disabled(username: str, timeout: float = 8.0) -> bool | None:
     return None
 
 
-def _scrapling_result(arguments: list[str], marker: str, timeout: int) -> dict | None:
-    """Run the small helper inside the existing logged-in Scrapling project."""
-    project = Path(os.environ.get(
-        "INSTAGRAM_SCRAPLING_PROJECT",
-        r"D:\vscode\cargeneratormasterfolder\carleadgeneratorscrapling",
+def ig_authenticated() -> bool:
+    """Whether a saved, hand-authenticated Instagram browser session exists."""
+    return IG_SESSION_DIR is not None and (IG_SESSION_DIR / IG_SESSION_MARKER).is_file()
+
+
+def _ig_deps_available() -> bool:
+    """In a frozen build scrapling/playwright are always bundled; in source
+    mode they're an optional extra (`pip install "scrapling[fetchers]"`) only
+    needed for this one feature, so check rather than assume."""
+    if getattr(sys, "frozen", False):
+        return True
+    import importlib.util
+    return all(importlib.util.find_spec(package) is not None for package in (
+        "scrapling", "playwright", "browserforge", "apify_fingerprint_datapoints",
+        "curl_cffi", "patchright", "msgspec", "anyio", "protego",
     ))
-    python = project / "venv" / "Scripts" / "python.exe"
-    helper = RESOURCE_ROOT / "ig_status_helper.py"
-    if not (python.is_file() and (project / "ig_client.py").is_file() and helper.is_file()):
+
+
+def _chrome_available() -> bool:
+    if shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("google-chrome-stable"):
+        return True
+    if sys.platform == "win32":
+        return any(
+            (Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe").is_file()
+            for root in (os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)"),
+                         os.environ.get("LOCALAPPDATA")) if root
+        )
+    if sys.platform == "darwin":
+        return (Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").is_file()
+                or (Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome").is_file())
+    return False
+
+
+def _ig_helper_command(mode: str, args: list[str]) -> list[str] | None:
+    if IG_SESSION_DIR is None:
         return None
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--ig-helper", str(IG_SESSION_DIR), mode, *args]
+    helper = RESOURCE_ROOT / "ig_helper.py"
+    if not helper.is_file():
+        return None
+    return [sys.executable, str(helper), str(IG_SESSION_DIR), mode, *args]
+
+
+def instagram_login_state() -> str:
+    """'unavailable' (missing setup, dependencies, or Chrome), 'in_progress',
+    'logged_in', or 'logged_out'."""
+    if IG_SESSION_DIR is None or not _ig_deps_available() or not _chrome_available():
+        return "unavailable"
+    if _LOGIN_PROC is not None and _LOGIN_PROC.poll() is None:
+        return "in_progress"
+    return "logged_in" if ig_authenticated() else "logged_out"
+
+
+def start_instagram_login() -> str:
+    """Launch the visible Chrome login window as a detached subprocess."""
+    global _LOGIN_PROC
+    command = _ig_helper_command("login", [])
+    if command is None or not _ig_deps_available():
+        raise RuntimeError("Instagram login is not available")
+    if not _chrome_available():
+        raise RuntimeError("Google Chrome is not installed")
+    if _LOGIN_PROC is not None and _LOGIN_PROC.poll() is None:
+        return "in_progress"
+    _LOGIN_PROC = subprocess.Popen(
+        command,
+        cwd=IG_SESSION_DIR.parent if IG_SESSION_DIR else None,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    return "in_progress"
+
+
+def stop_instagram_login() -> None:
+    """Terminate an in-flight visible login helper during app shutdown."""
+    global _LOGIN_PROC
+    proc, _LOGIN_PROC = _LOGIN_PROC, None
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def _scrapling_result(mode: str, args: list[str], timeout: int) -> dict | None:
+    """Run the bundled helper against the saved, hand-authenticated session."""
+    command = _ig_helper_command(mode, args)
+    if command is None or not ig_authenticated():
+        return None
+    fd, result_path = tempfile.mkstemp(prefix="ifr-ig-", suffix=".json")
+    os.close(fd)
     try:
+        env = os.environ.copy()
+        env["IFR_IG_RESULT_FILE"] = result_path
         result = subprocess.run(
-            [str(python), str(helper), str(project), *arguments],
-            cwd=project,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             check=False,
+            env=env,
         )
-        marker = next(
-            line.removeprefix(marker)
-            for line in reversed(result.stdout.splitlines())
-            if line.startswith(marker)
-        )
-        payload = json.loads(marker)
+        payload = json.loads(Path(result_path).read_text(encoding="utf-8"))
         if result.returncode or not isinstance(payload, dict):
             raise ValueError("checker failed")
         return payload
-    except (OSError, subprocess.TimeoutExpired, StopIteration, ValueError, json.JSONDecodeError):
+    except (OSError, subprocess.TimeoutExpired, ValueError, json.JSONDecodeError):
         print("warning: authenticated Instagram checker unavailable", file=sys.stderr)
         return None
+    finally:
+        Path(result_path).unlink(missing_ok=True)
 
 
 def _authenticated_statuses(usernames: list[str]) -> dict[str, bool | None] | None:
-    """Use the existing logged-in Scrapling project when it is available."""
-    statuses = _scrapling_result(usernames, "IFR_STATUS_JSON=", max(90, 30 + 20 * len(usernames)))
+    """Use the saved, hand-authenticated Instagram session when it is available."""
+    statuses = _scrapling_result("status", usernames, max(90, 30 + 20 * len(usernames)))
     if statuses is None:
         return None
     return {u: False if statuses.get(u) == "active" else None for u in usernames}
 
 
 def _authenticated_profile_counts(username: str) -> dict[str, int] | None:
-    counts = _scrapling_result(["counts", username], "IFR_COUNTS_JSON=", 90)
+    counts = _scrapling_result("counts", [username], 90)
     if counts is None:
         return None
     if all(isinstance(counts.get(k), int) and counts[k] >= 0 for k in ("followers", "following")):
@@ -483,10 +570,13 @@ def _live_profile_counts() -> dict[str, int] | None:
     active = payload["active_profile_id"]
     if active is None:
         return None
-    if active not in LIVE_PROFILE_COUNTS:
-        profile = next(p for p in payload["profiles"] if p.get("id") == active)
-        LIVE_PROFILE_COUNTS[active] = _authenticated_profile_counts(profile["name"])
-    return LIVE_PROFILE_COUNTS[active]
+    if active in LIVE_PROFILE_COUNTS:
+        return LIVE_PROFILE_COUNTS[active]
+    profile = next(p for p in payload["profiles"] if p.get("id") == active)
+    counts = _authenticated_profile_counts(profile["name"])
+    if counts is not None:
+        LIVE_PROFILE_COUNTS[active] = counts
+    return counts
 
 
 def recheck_flagged_accounts_by_network(*, timeout: float = 4.0,
@@ -514,15 +604,22 @@ def recheck_flagged_accounts_by_network(*, timeout: float = 4.0,
     return reenabled
 
 
-def filter_disabled_accounts_by_network(snapshot: dict, *, delay: float = 0.25) -> None:
+def filter_disabled_accounts_by_network(snapshot: dict, *, delay: float = 0.25,
+                                        renamed: dict[str, str] | None = None) -> None:
     """For each handle in 'dont_follow_me_back', fetch their Instagram page
     and merge detected-disabled entries into 'disabled_accounts'. Heuristic
     only; never silently drops handles on network failure (unklar verdicts
-    stay in the active list)."""
+    stay in the active list). Handles known to have been renamed are skipped —
+    their old page 404s, which this sniff would misread as deactivated."""
     label = snapshot["date_folder"]
     items = snapshot["dont_follow_me_back"]
+    renamed = renamed or {}
     active, disabled = [], []
     for i, u in enumerate(items):
+        if u["username"] in renamed:
+            print(f"  [{label}] {i + 1}/{len(items)} @{u['username']}: renamed -> @{renamed[u['username']]}", flush=True)
+            active.append(u)
+            continue
         verdict = looks_disabled(u["username"])
         tag = "disabled" if verdict is True else ("active" if verdict is False else "?")
         print(f"  [{label}] {i + 1}/{len(items)} @{u['username']}: {tag}", flush=True)
@@ -713,6 +810,58 @@ def by_ts_desc(records: list[dict]) -> list[dict]:
     return sorted(records, key=lambda r: r.get("ts") or 0, reverse=True)
 
 
+# ---------- username changes ----------
+
+# Instagram rewrites a deleted account's handle to `__deleted__<hash>`, so a
+# "rename" landing on one is proof of deletion, not of a live new handle.
+TOMBSTONE_PREFIX = "__deleted__"
+
+
+def detect_renames(prev: list[dict], curr: list[dict]) -> dict[str, str]:
+    """Map old_handle -> new_handle for people who changed their username.
+
+    The export carries no user id, so by handle alone a rename is
+    indistinguishable from "they unfollowed me AND a stranger followed me".
+    The follow *timestamp* survives a rename though (the relationship never
+    broke), so a handle that vanished and a handle that appeared sharing an
+    exact timestamp are the same person.
+
+    ponytail: requires the timestamp to be unique on both sides of the diff.
+    Two unrelated people acting in the same unix second would otherwise pair
+    up; ambiguous timestamps are simply left unmatched (old behavior).
+    """
+    p, c = by_username(prev), by_username(curr)
+    gone = {u: p[u]["ts"] for u in p.keys() - c.keys() if p[u].get("ts")}
+    fresh_by_ts: dict[int, list[str]] = {}
+    for u in c.keys() - p.keys():
+        if c[u].get("ts"):
+            fresh_by_ts.setdefault(c[u]["ts"], []).append(u)
+    gone_ts = list(gone.values())
+    return {
+        old: fresh_by_ts[ts][0]
+        for old, ts in gone.items()
+        if gone_ts.count(ts) == 1 and len(fresh_by_ts.get(ts, ())) == 1
+    }
+
+
+def renames_across(raw_pairs: list[tuple[str, list[dict], list[dict]]]) -> dict[str, str]:
+    """Every rename seen across consecutive snapshots, each old handle resolved
+    to the *current* one. People rename repeatedly (a -> b -> c), so chains are
+    followed to the end; the `seen` guard stops a handle that got reused."""
+    chain: dict[str, str] = {}
+    for (_, p_f, p_g), (_, c_f, c_g) in zip(raw_pairs, raw_pairs[1:]):
+        chain.update(detect_renames(p_f, c_f))
+        chain.update(detect_renames(p_g, c_g))
+    resolved = {}
+    for old in chain:
+        seen, new = {old}, chain[old]
+        while new in chain and new not in seen:
+            seen.add(new)
+            new = chain[new]
+        resolved[old] = new
+    return resolved
+
+
 # ---------- per-snapshot ----------
 
 
@@ -791,17 +940,22 @@ def fold_pair(prev: tuple[str, list[dict], list[dict]],
     by_p_f, by_p_g = by_username(p_f), by_username(p_g)
     by_c_f, by_c_g = by_username(c_f), by_username(c_g)
 
-    lost_f   = fset_p - fset_c   # followers I had, no longer follow me
-    new_f    = fset_c - fset_p   # new mutual followers
-    lost_g   = gset_p - gset_c   # accounts I dropped or who blocked me
-    new_g    = gset_c - gset_p   # accounts I newly followed
+    # A username change is not a lost follower and not a new one. Drop both
+    # sides of every matched pair out of the deltas.
+    renamed = detect_renames(p_f, c_f) | detect_renames(p_g, c_g)
+    old_handles, new_handles = renamed.keys(), set(renamed.values())
+
+    lost_f   = fset_p - fset_c - old_handles   # followers I had, no longer follow me
+    new_f    = fset_c - fset_p - new_handles   # new mutual followers
+    lost_g   = gset_p - gset_c - old_handles   # accounts I dropped or who blocked me
+    new_g    = gset_c - gset_p - new_handles   # accounts I newly followed
 
     # ponytail: 'lost_never_followed_back' should really be "I unfollowed them
     # and they never followed me back". It is NOT "they unfollowed me".
     # Compute it as: people I was following at the previous snapshot, am no
     # longer following now, and were not following me in either snapshot.
     # This also excludes anyone who followed me back between snapshots.
-    lost_never_followed_back = (gset_p - gset_c) - fset_p - fset_c
+    lost_never_followed_back = (gset_p - gset_c) - fset_p - fset_c - old_handles
 
     # ponytail: `unilateral_unfollowed` is a semantic COMPLEMENT to
     # `lost_never_followed_back`. The latter captures "I unfollowed
@@ -812,7 +966,7 @@ def fold_pair(prev: tuple[str, list[dict], list[dict]],
     # (gset_p or gset_c), so the panel only shows pure unrequited
     # losses. Preserves prev-snapshot records via by_p_f so timestamps
     # match what was actually observed.
-    unilateral_unfollowed = (fset_p - fset_c) - gset_p - gset_c
+    unilateral_unfollowed = (fset_p - fset_c) - gset_p - gset_c - old_handles
 
     return {
         "prev_folder": p_name,
@@ -823,7 +977,9 @@ def fold_pair(prev: tuple[str, list[dict], list[dict]],
             "new_followings":         len(new_g),
             "lost_followings":        len(lost_g),
             "unilateral_unfollowed":  len(unilateral_unfollowed),
+            "renamed":                len(renamed),
         },
+        "renamed":                 renamed,
         "lost_followers":          by_ts_desc([by_p_f[u] for u in lost_f]),
         "new_followers":           by_ts_desc([by_c_f[u] for u in new_f]),
         "lost_followings":         by_ts_desc([by_p_g[u] for u in lost_g]),
@@ -855,6 +1011,9 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self) -> None:  # type: ignore[override]
         if self.path == "/profiles":
             self._handle_profiles()
+            return
+        if self.path == "/login-instagram":
+            self._handle_login_instagram()
             return
         if self.path in ("/flag", "/import", "/delete", "/recheck-disabled") and self._reject_without_profile():
             return
@@ -895,6 +1054,9 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "counts": _live_profile_counts()})
             except OSError as e:
                 self.send_error(500, f"could not check live counts: {e}")
+            return
+        if self.path == "/ig-status":
+            self._send_json(200, {"ok": True, "state": instagram_login_state()})
             return
         super().do_GET()
 
@@ -986,14 +1148,29 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         self._send_json(200, {"ok": True, "username": username.lower(),
                               "action": action, "total": len(new_list)})
 
+    def _handle_login_instagram(self) -> None:
+        """POST /login-instagram -- open the visible Chrome login window."""
+        try:
+            state = start_instagram_login()
+        except RuntimeError as e:
+            self._send_json(409, {"ok": False, "error": str(e)})
+            return
+        self._send_json(200, {"ok": True, "state": state})
+
     def _handle_recheck_disabled(self) -> None:
         """POST /recheck-disabled -- refresh every saved flag in one pass."""
+        if not ig_authenticated():
+            self._send_json(409, {"ok": False, "error": "not logged into Instagram yet"})
+            return
         checked = len(_read_flagged())
         try:
             reenabled = recheck_flagged_accounts_by_network(authenticated=True)
             _refresh_active_report()
         except OSError as e:
             self.send_error(500, f"could not refresh disabled accounts: {e}")
+            return
+        if not ig_authenticated():
+            self._send_json(409, {"ok": False, "error": "Instagram session expired; log in again"})
             return
         self._send_json(200, {
             "ok": True,
@@ -1555,6 +1732,26 @@ def run_analyze(args: argparse.Namespace) -> None:
         snapshots.append(summary)
         raw_pairs.append((folder.name, fs, gs))
 
+    # Resolve username changes before anything treats a vanished handle as a
+    # loss. An old handle 404s on instagram.com, so without this it reads as a
+    # deactivated account and gets flagged — the person just renamed.
+    renamed = renames_across(raw_pairs)
+    deleted = {old for old, new in renamed.items() if new.startswith(TOMBSTONE_PREFIX)}
+    for old, new in sorted(renamed.items()):
+        label = "deleted" if old in deleted else f"renamed -> @{new}"
+        print(f"  [{label}] @{old}", flush=True)
+    # Renamed people are not disabled; tombstoned ones provably are.
+    stale_flags = (flagged & renamed.keys()) - deleted
+    new_flags = deleted - flagged
+    if stale_flags or new_flags:
+        flagged = (flagged - stale_flags) | new_flags
+        _write_flagged(flagged)
+        if stale_flags:
+            print(f"unflagged {len(stale_flags)} renamed account(s) wrongly marked disabled", flush=True)
+        if new_flags:
+            print(f"flagged {len(new_flags)} deleted account(s)", flush=True)
+        snapshots = [read_snapshot(folder, flagged)[0] for folder in folders]
+
     # ponytail: keep week-over-week folds in report.json for JSON consumers;
     # the read-only UI doesn't render them. Cheap and preserves the historical
     # summary so power users can diff snapshots via the data file.
@@ -1571,12 +1768,13 @@ def run_analyze(args: argparse.Namespace) -> None:
     ever_f = {r["username"]: r for _, fs, _ in raw_pairs for r in fs}
     ever_g = {r["username"] for _, _, gs in raw_pairs for r in gs}
     latest_f = {r["username"] for r in raw_pairs[-1][1]}
-    global_unilateral = by_ts_desc([ever_f[u] for u in ever_f.keys() - latest_f - ever_g - flagged])
+    global_unilateral = by_ts_desc(
+        [ever_f[u] for u in ever_f.keys() - latest_f - ever_g - flagged - renamed.keys()])
 
     # A flagged historical unfollower is absent from the latest snapshot, so
     # surface all previously seen flags here to keep Unflag available.
     ever_records = {r["username"]: r for _, fs, gs in raw_pairs for r in fs + gs}
-    disabled = {u: ever_records[u] for u in flagged & ever_records.keys()}
+    disabled = {u: ever_records[u] for u in (flagged & ever_records.keys()) - (renamed.keys() - deleted)}
     disabled.update({r["username"]: r for r in snapshots[-1]["disabled_accounts"]})
     snapshots[-1]["disabled_accounts"] = by_ts_desc(list(disabled.values()))
 
@@ -1584,13 +1782,15 @@ def run_analyze(args: argparse.Namespace) -> None:
         for snap in snapshots:
             n = len(snap["dont_follow_me_back"])
             print(f"checking {snap['date_folder']} for disabled accounts ({n} to check)...", flush=True)
-            filter_disabled_accounts_by_network(snap)
+            filter_disabled_accounts_by_network(snap, renamed=dict(
+                (o, n) for o, n in renamed.items() if o not in deleted))
 
     report = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "snapshots": snapshots,
         "weeks": weeks,
         "unilateral_unfollowed": global_unilateral,
+        "renamed": renamed,
     }
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

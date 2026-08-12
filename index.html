@@ -1026,6 +1026,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   data: null,
   liveCounts: null,
+  ig: { state: "logged_out", polling: false },
   filters: { nfb: "", dfmb: "", disabled: "", unilateral: "" },
   profile: { enabled: false, activeId: null, profiles: [], legacyNeedsUsername: false, busy: 0 },
 };
@@ -1359,6 +1360,64 @@ async function toggleFlag(btn, username, action) {
   }
 }
 
+async function refreshIgStatus() {
+  try {
+    const r = await fetch("/ig-status", { cache: "no-store" });
+    if (!r.ok) return;
+    const result = await r.json();
+    state.ig.state = result.state;
+  } catch (e) {
+    console.error("ig status check failed:", e);
+  }
+  renderIgButton();
+}
+
+function renderIgButton() {
+  const btn = $("recheck-disabled");
+  const labels = {
+    logged_out: "Log into Instagram",
+    in_progress: "Waiting for login…",
+    logged_in: "Recheck statuses",
+    unavailable: "Status check unavailable",
+  };
+  btn.textContent = labels[state.ig.state] || "Recheck statuses";
+  btn.disabled = state.ig.state === "in_progress" || state.ig.state === "unavailable";
+}
+
+async function pollIgLogin() {
+  if (state.ig.polling) return;
+  state.ig.polling = true;
+  try {
+    for (let i = 0; i < 220; i++) {           // ~11 min, matches the helper's own login timeout
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await refreshIgStatus();
+      if (state.ig.state !== "in_progress") break;
+    }
+    if (state.ig.state === "logged_in") {
+      setProfileStatus("Logged into Instagram.");
+      refreshLiveCounts().catch((e) => console.error("live count check failed:", e));
+    } else if (state.ig.state === "logged_out") {
+      setProfileStatus("Instagram login window closed without logging in.", true);
+    }
+  } finally {
+    state.ig.polling = false;
+  }
+}
+
+async function loginInstagram() {
+  setProfileStatus("Opening Chrome — log into Instagram in the window that opens…");
+  try {
+    const r = await fetch("/login-instagram", { method: "POST" });
+    const text = await r.text();
+    if (!r.ok) throw new Error((JSON.parse(text).error) || text || `HTTP ${r.status}`);
+    state.ig.state = "in_progress";
+    renderIgButton();
+    pollIgLogin();
+  } catch (e) {
+    setProfileStatus(`Could not start Instagram login: ${e.message}`, true);
+  }
+}
+
 async function recheckDisabled() {
   const btn = $("recheck-disabled");
   if (btn.disabled || state.profile.busy) return;
@@ -1369,7 +1428,7 @@ async function recheckDisabled() {
   try {
     const r = await fetch("/recheck-disabled", { method: "POST" });
     const text = await r.text();
-    if (!r.ok) throw new Error(text || `HTTP ${r.status}`);
+    if (!r.ok) throw new Error((JSON.parse(text).error) || text || `HTTP ${r.status}`);
     const result = JSON.parse(text);
     await load(true);
     setProfileStatus(result.reenabled.length
@@ -1378,9 +1437,16 @@ async function recheckDisabled() {
   } catch (e) {
     setProfileStatus(`Status check failed: ${e.message}`, true);
   } finally {
-    btn.disabled = false;
-    btn.textContent = "Recheck statuses";
     setProfileBusy(false);
+    await refreshIgStatus();
+  }
+}
+
+function igButtonClick() {
+  if (state.ig.state === "logged_in") {
+    recheckDisabled();
+  } else if (state.ig.state === "logged_out") {
+    loginInstagram();
   }
 }
 
@@ -1708,7 +1774,8 @@ function wireImport() {
 async function bootstrap() {
   wireSearch();
   wireFlagButtons();
-  $("recheck-disabled").addEventListener("click", recheckDisabled);
+  $("recheck-disabled").addEventListener("click", igButtonClick);
+  await refreshIgStatus();
   wireDisclosure("disabled-toggle", "disabled-section", "Show flagged accounts", "Hide flagged accounts");
   wireDisclosure(
     "unilateral-toggle",

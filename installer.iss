@@ -1,7 +1,7 @@
 ; Inno Setup script for Instagram Follower Report.
 ;
 ; Build:
-;   1. pip install pyinstaller pywebview
+;   1. pip install pyinstaller pywebview "scrapling[fetchers]"
 ;   2. pyinstaller build.spec           -> dist/InstagramFollowerReport/
 ;   3. Install Inno Setup 6.x (https://jrsoftware.org/isdl.php) -- free, ~5MB.
 ;   4. Open installer.iss in Inno Setup Compiler, Build > Compile.

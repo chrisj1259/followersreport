@@ -33,6 +33,21 @@ import threading
 import urllib.request
 from pathlib import Path
 
+# PyInstaller's windowed bootloader exposes no standard streams. Keep both the
+# GUI and its headless helper compatible with third-party diagnostic writes.
+if sys.stdin is None:
+    sys.stdin = open(os.devnull, "r")
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
+# The frozen executable re-invokes itself for browser work. Exit before loading
+# pywebview or any GUI state; PyInstaller still sees and bundles imports below.
+if len(sys.argv) > 1 and sys.argv[1] == "--ig-helper":
+    import ig_helper
+    raise SystemExit(ig_helper.main(sys.argv[2:]))
+
 import run  # the existing analyze.py + serve.py layer (analyze + FlagHandler + etc.)
 import webview  # pip install pywebview -- the only third-party dep beyond stdlib
 
@@ -328,6 +343,10 @@ def main() -> int:
     finally:
         try:
             httpd.shutdown()
+        except Exception:
+            pass
+        try:
+            run.stop_instagram_login()
         except Exception:
             pass
         try:

@@ -4,6 +4,18 @@
 
 ## [1.2.0] - 2026-08-11
 
+### Fixed
+
+- People who change their Instagram username are no longer mistaken for unfollowers or for disabled accounts. The export contains no user ID, so a rename previously looked like "they unfollowed you and a stranger followed you" — and because the old handle 404s on instagram.com, it also got flagged as deactivated. Renames are now matched by the follow timestamp, which survives a username change, and any saved flag on a renamed account is cleared automatically.
+- Accounts Instagram has actually deleted (their handle becomes `__deleted__…`) are now detected from the export alone and flagged as disabled, with no network check needed.
+
+### Changed
+
+- The authenticated status check no longer depends on a separate, machine-specific Scrapling project. Scrapling and Playwright now ship inside the app itself, and a new **Log into Instagram** button (shown before you've authenticated) opens a real Chrome window for you to log in by hand once; the session is saved locally and reused for every later **Recheck statuses** click and live-count check. This is what makes both features actually usable by anyone who installs the app, not just on the machine they were built on.
+- **Recheck statuses** now reports plainly when you haven't logged in yet instead of silently claiming it checked accounts and finding nothing.
+
+## [1.1.4] - 2026-08-11
+
 ### Added
 
 - A new **Recheck statuses** button checks every saved disabled-account flag through the existing authenticated Scrapling session. It restores only profiles Instagram positively identifies as active; blocked or unclear responses preserve their flags.

@@ -37,6 +37,31 @@ def ig(name):
     }
 
 
+# --- username-change detection (pure functions, no I/O) ---
+def rec(name, ts):
+    return {"username": name, "ts": ts}
+
+
+# same timestamp on both sides of the diff = same person, new handle
+assert run.detect_renames(
+    [rec("old_name", 100), rec("stays", 200), rec("real_unfollow", 300)],
+    [rec("new_name", 100), rec("stays", 200), rec("real_new", 999)],
+) == {"old_name": "new_name"}, "rename not matched by timestamp"
+# ambiguous timestamps stay unmatched rather than pairing strangers
+assert run.detect_renames(
+    [rec("a", 100), rec("b", 100)], [rec("c", 100), rec("d", 100)]
+) == {}, "ambiguous timestamp must not pair"
+assert run.detect_renames([rec("a", None)], [rec("b", None)]) == {}, "missing ts must not pair"
+# a -> b -> c resolves to the current handle
+assert run.renames_across([
+    ("t1", [rec("a", 100)], []), ("t2", [rec("b", 100)], []), ("t3", [rec("c", 100)], []),
+]) == {"a": "c", "b": "c"}, "rename chain not resolved to latest handle"
+# a deleted account gets tombstoned, not renamed — it must stay flagged
+assert run.renames_across([("t1", [rec("gone", 100)], []),
+                           ("t2", [rec(run.TOMBSTONE_PREFIX + "x9", 100)], [])]) == {
+    "gone": run.TOMBSTONE_PREFIX + "x9"}, "tombstone pairing broken"
+print("username-change detection OK")
+
 date_str = "06-30-2026"
 t4_date = "07-01-2026"
 (sb / "data" / date_str).mkdir(parents=True)
@@ -193,8 +218,19 @@ try:
             else ("alice_real" in unilateral and "alice_real" not in disabled)
     print("T4c historical flag OK: alice moves to disabled and Unflag restores her")
 
-    # === T4d: one-click status recheck refreshes flags and the report ===
+    # === T4d: /recheck-disabled requires a logged-in Instagram session ===
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/recheck-disabled", data=b"")
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        assert False, "recheck should be rejected while logged out"
+    except urllib.error.HTTPError as e:
+        assert e.code == 409, e.code
+    print("T4d POST /recheck-disabled OK: rejected while logged out")
+
+    # === T4e: one-click status recheck refreshes flags and the report ===
+    real_ig_authenticated = run.ig_authenticated
     real_authenticated_statuses = run._authenticated_statuses
+    run.ig_authenticated = lambda: True
     run._authenticated_statuses = lambda usernames: {
         username: False if username == "zelda_real" else None for username in usernames
     }
@@ -203,10 +239,11 @@ try:
         with urllib.request.urlopen(req, timeout=5) as r:
             recheck = json.loads(r.read())
     finally:
+        run.ig_authenticated = real_ig_authenticated
         run._authenticated_statuses = real_authenticated_statuses
     assert recheck["ok"] is True and recheck["reenabled"] == ["zelda_real"], recheck
     assert json.loads((sb / "disabledaccounts.json").read_text()) == ["mystery_real"]
-    print(f"T4d POST /recheck-disabled OK: {recheck}")
+    print(f"T4e POST /recheck-disabled OK: {recheck}")
 
     # === T5: list snapshots via GET /snapshots ===
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/snapshots", timeout=5) as r:
@@ -313,6 +350,10 @@ try:
     initial = request_json(profile_port, "/profiles")
     assert initial["profile_mode"] is True and initial["active_profile_id"] is None, initial
     assert initial["profiles"] == [] and initial["legacy_needs_username"] is False, initial
+    ig_status = request_json(profile_port, "/ig-status")
+    expected_ig_state = "logged_out" if run._ig_deps_available() and run._chrome_available() else "unavailable"
+    assert ig_status == {"ok": True, "state": expected_ig_state}, ig_status
+    print(f"T8a GET /ig-status OK: {expected_ig_state} with no session marker yet")
     request_json(profile_port, "/snapshots", expected=409)
     for path in ("/import", "/delete", "/flag"):
         request_json(profile_port, path, {}, expected=409)
