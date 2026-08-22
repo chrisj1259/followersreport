@@ -136,7 +136,44 @@ The report refreshes automatically.
 Follower and following cards count the unique records in that export. Instagram's
 live profile totals can differ because exports are point-in-time downloads and may
 still include disabled accounts; the card subtitle shows the total after your
-manual disabled-account flags.
+manual disabled-account flags. See
+[When the numbers don't match Instagram](#when-the-numbers-dont-match-instagram).
+
+### When the numbers don't match Instagram
+
+Open the **Doesn't match Instagram?** panel under the stat cards (or run
+`python run.py audit`). It walks the arithmetic one step at a time — records read
+from the export, duplicate handles removed, accounts flagged as disabled, the
+total counted here — and names any export file it deliberately did **not** count.
+
+Two things cause a gap, and they have different fixes:
+
+- **Accounts Instagram no longer counts.** Deactivated, deleted, and banned
+  accounts stay in your data export but disappear from the follower/following
+  totals on your profile. Downloading a fresh export will not change this; every
+  export contains them. Click **Find the difference** (or run
+  `python run.py audit --check-network`) to check each handle against
+  instagram.com and list the ones with no live profile page, then flag them. A
+  handle can also read as gone because the person *renamed*, so glance at the
+  list before flagging — with two or more snapshots on disk the app detects
+  renames on its own from the follow timestamp.
+- **A stale export.** Instagram builds the file when you *request* it, not when
+  you download it. Anything you followed or unfollowed in between is missing.
+  Request a new export.
+
+Files sitting in the export folder that are *not* people you follow —
+`following_hashtags.json`, `pending_follow_requests.json`,
+`recently_unfollowed_profiles.json`, `close_friends.json`,
+`blocked_profiles.json` — are never counted, and the panel lists the ones it
+skipped. (Followed hashtags being counted as followed accounts was a real bug
+before v1.2.1; if your Following number used to read a few too high, that was it.)
+
+```powershell
+python run.py audit                                  # instant, no network
+python run.py audit --check-network                  # sweep both lists
+python run.py audit --check-network --scope following
+python run.py audit --check-network --flag-gone      # and flag what's confirmed gone
+```
 
 ### Flag suspicious accounts
 

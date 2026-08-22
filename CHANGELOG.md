@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-22
+
+### Fixed
+
+- **The Following card counted followed hashtags as people.** Instagram ships `following_hashtags.json` in the same export folder as `following.json`, and the filename router matched it on the substring `following`. Every hashtag you follow was counted as an account you follow, so the card overshot instagram.com by exactly that many — and re-importing or clearing snapshots could never fix it, because each fresh export contains the same file. The same bug pulled in `pending_follow_requests.json`, `recently_unfollowed_profiles.json`, `close_friends.json`, and `blocked_profiles.json` when a whole export folder was staged by hand. Those files are now vetoed by name, and any record whose link points at `/explore/` (a hashtag or location, not a person) is dropped even if the file is renamed.
+- The **Saved snapshots** inventory used a third, divergent copy of the counting rule: it summed raw record counts without deduping, so it double-counted handles appearing in both `followers_1.json` and `followers_2.json` and could contradict the stat cards directly above it. It now routes and dedupes exactly like the report.
+
+### Added
+
+- **"Doesn't match Instagram?" panel** under the stat cards, showing the arithmetic behind each number — records read from the export, duplicate handles removed, accounts flagged as disabled, the total counted here — and, when a live profile check is available, how that compares with instagram.com's own count.
+- **Find the difference** button in that panel checks every account in your export against instagram.com and names the ones with no live profile page, so a genuine gap (deactivated, deleted, or banned accounts, which stay in the export but stop counting on your profile) can be flagged instead of guessed at. Each result carries a Flag button.
+- `python run.py audit` prints the same reconciliation from the CLI, including which export files were counted and which were ignored. `--check-network` adds the live sweep, `--scope` narrows it to one list, and `--flag-gone` flags everything it confirms is gone.
+- `report.json` snapshots now carry `source_files` plus `follower_records`, `following_records`, `duplicate_followers`, `duplicate_following`, `flagged_followers`, and `flagged_following` for JSON consumers.
+
 ## [1.2.0] - 2026-08-11
 
 ### Fixed

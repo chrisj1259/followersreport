@@ -483,5 +483,103 @@ payload = run._profiles_payload()
 assert payload["profile_mode"] is True and payload["legacy_needs_username"] is True
 print("T10 source profiles OK: web startup exposes legacy migration/account controls")
 
+# --- T11: export-folder noise must never reach the headline counts -------
+# Regression for "the app says I follow more people than Instagram does".
+# Instagram ships following_hashtags.json in the SAME folder as following.json;
+# a plain `"following" in filename` router counted every followed hashtag as a
+# person, so the following card overshot instagram.com by exactly the number of
+# hashtags followed and no amount of re-importing could fix it.
+def profile_rec(name, ts=1700000000):
+    return {"title": "", "string_list_data": [
+        {"href": f"https://www.instagram.com/{name}", "value": name, "timestamp": ts}]}
+
+
+def hashtag_rec(tag, ts=1700000000):
+    return {"title": tag, "string_list_data": [
+        {"href": f"https://www.instagram.com/explore/tags/{tag}", "value": tag, "timestamp": ts}]}
+
+
+noise = sb / "audit-export" / "01-02-2026"
+noise.mkdir(parents=True)
+(noise / "followers_1.json").write_text(json.dumps(
+    [profile_rec(f"f{i}") for i in range(5)]))
+(noise / "following.json").write_text(json.dumps(
+    {"relationships_following": [profile_rec(f"f{i}") for i in range(3)]}))
+(noise / "following_hashtags.json").write_text(json.dumps(
+    {"relationships_following_hashtags": [hashtag_rec(t) for t in ("jdm", "cars")]}))
+(noise / "pending_follow_requests.json").write_text(json.dumps(
+    [profile_rec("pending_person")]))
+(noise / "recently_unfollowed_profiles.json").write_text(json.dumps([profile_rec("dropped")]))
+(noise / "close_friends.json").write_text(json.dumps([profile_rec("bestie")]))
+(noise / "blocked_profiles.json").write_text(json.dumps([profile_rec("blocked_person")]))
+
+summary, _, following_recs = run.read_snapshot(noise, set())
+assert summary["counts"]["followers"] == 5, summary["counts"]
+assert summary["counts"]["following"] == 3, summary["counts"]
+assert {r["username"] for r in following_recs} == {"f0", "f1", "f2"}, following_recs
+ignored = {f["name"] for f in summary["source_files"] if f["bucket"] is None}
+assert "following_hashtags.json" in ignored and "close_friends.json" in ignored, ignored
+# The href guard is the second line of defense: even hand-renamed into the
+# following bucket, a hashtag list must parse to zero people.
+assert run.load_json_records(noise / "following_hashtags.json") == []
+# ...and the staging router must agree with the snapshot router, or an import
+# would quietly re-introduce the bug it just fixed.
+n_f, n_g = run._stage_snapshot(noise, "01-03-2026")
+assert (n_f, n_g) == (5, 3), (n_f, n_g)
+# The saved-snapshots inventory must route and dedupe identically, or it
+# contradicts the stat cards sitting directly above it on the page.
+listed = {item["date"]: item for item in run._list_snapshots()[0]}
+assert listed["01-03-2026"]["followers"] == 5, listed["01-03-2026"]
+assert listed["01-03-2026"]["following"] == 3, listed["01-03-2026"]
+print("T11 export noise OK: hashtags/pending/close-friends files never reach the counts")
+
+# --- T12: audit reconciles the arithmetic behind the headline numbers ----
+run.LIVE_PROFILE_COUNTS.clear()
+audit = run.audit_counts()
+assert audit["date_folder"] == "01-03-2026", audit["date_folder"]
+assert audit["following"]["unique"] == 3 and audit["following"]["active"] == 3, audit["following"]
+assert audit["following"]["live"] is None and audit["following"]["gap"] is None, audit["following"]
+assert audit["scan"] is None, audit["scan"]
+
+run.add_flagged("f2")
+audit = run.audit_counts()
+assert audit["following"]["flagged"] == 1 and audit["following"]["active"] == 2, audit["following"]
+assert audit["followers"]["flagged"] == 1 and audit["followers"]["active"] == 4, audit["followers"]
+
+# A warmed live-count cache is what turns the ledger into a verdict. The audit
+# must read that cache rather than spawning the browser subprocess itself --
+# the HTTP server is single-threaded, so a cold fetch there would stall the page.
+real_cached = run.cached_live_profile_counts
+run.cached_live_profile_counts = lambda: {"followers": 4, "following": 1}
+try:
+    audit = run.audit_counts()
+finally:
+    run.cached_live_profile_counts = real_cached
+assert audit["live_available"] is True
+assert audit["following"]["gap"] == 1, audit["following"]   # 2 active vs 1 live
+assert audit["followers"]["gap"] == 0, audit["followers"]   # 4 active vs 4 live
+# Without a warmed cache the audit reports "unknown" instead of blocking.
+assert run.audit_counts()["live_available"] is False
+run.unflag("f2")
+# The network sweep itself, with instagram.com stubbed out: it must name the
+# handles whose page is gone, leave "unclear" ones alone, and only flag when
+# explicitly asked to.
+real_looks_disabled = run.looks_disabled
+run.looks_disabled = lambda u, timeout=8.0: {"f0": True, "f1": None}.get(u, False)
+try:
+    audit = run.audit_counts(check_network=True, scope="following")
+    scan = audit["scan"]
+    assert scan["scope"] == "following" and scan["checked"] == 3, scan
+    assert [r["username"] for r in scan["gone"]] == ["f0"], scan["gone"]
+    assert scan["unclear"] == ["f1"], scan["unclear"]
+    assert scan["live_profiles"] == 1, scan["live_profiles"]
+    assert run._read_flagged() == set(), "audit must not flag anything on its own"
+
+    # Scope narrows the sweep; "both" also covers followers-only handles.
+    assert run.audit_counts(check_network=True, scope="both")["scan"]["checked"] == 5
+finally:
+    run.looks_disabled = real_looks_disabled
+print("T12 count audit OK: records -> unique -> after-flags -> live gap -> gone accounts")
+
 shutil.rmtree(sb, ignore_errors=True)
 print("SMOKE_TEST_OK")

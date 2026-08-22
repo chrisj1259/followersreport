@@ -402,9 +402,48 @@
   section.disabled-section .list li .when { color: rgba(255, 255, 255, 0.5); }
   section.disabled-section .list li button.unflag-btn { color: var(--text-invert); border-color: rgba(255, 255, 255, 0.3); }
 
+  /* ---------- count reconciliation ledger ---------- */
+  /* ponytail: reuses .disabled-section wholesale (band, heading, disclosure
+  toggle, body transition) so the panel lands in the existing design language
+  and only the ledger grid below is new. */
+  .reconcile-section .ledger {
+    display: grid;
+    gap: 10px;
+    margin: 0 0 14px;
+  }
+  .reconcile-section .ledger-row {
+    border: var(--border-normal) solid rgba(255, 255, 255, 0.16);
+    padding: 12px 14px;
+  }
+  .reconcile-section .ledger-row .side {
+    font-size: 11px;
+    font-weight: var(--font-medium);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: rgba(255, 255, 255, 0.6);
+    margin-bottom: 6px;
+  }
+  .reconcile-section .ledger-row .math {
+    font-size: 13px;
+    line-height: 1.7;
+    font-variant-numeric: tabular-nums;
+  }
+  .reconcile-section .ledger-row .math b { font-weight: var(--font-bold); }
+  .reconcile-section .ledger-row .step { color: rgba(255, 255, 255, 0.55); }
+  .reconcile-section .verdict {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 12px;
+    font-weight: var(--font-medium);
+  }
+  .reconcile-section .verdict.gap   { color: var(--color-danger); }
+  .reconcile-section .verdict.match { color: var(--color-inspire); }
+  .reconcile-section .verdict.unknown { color: rgba(255, 255, 255, 0.55); }
+
   /* disclosure toggle: circular ghost button, positioned above the body
   content of the Likely-disabled section so users can collapse/expand the
   flagged-accounts list without scrolling. */
+  .reconcile-section .disclosure-toggle,
   .disabled-section .disclosure-toggle {
     display: inline-flex;
     align-items: center;
@@ -418,11 +457,14 @@
     padding: 0;
     margin: 4px 0 10px;
   }
+  .reconcile-section .disclosure-toggle:focus-visible,
   .disabled-section .disclosure-toggle:focus-visible {
     outline: 2px solid var(--color-orange);
     outline-offset: 3px;
   }
+  .reconcile-section .disclosure-toggle svg,
   .disabled-section .disclosure-toggle svg { transition: transform 220ms ease-out; }
+  .reconcile-section[data-collapsed="false"] .disclosure-toggle svg,
   .disabled-section[data-collapsed="false"] .disclosure-toggle svg { transform: rotate(180deg); }
 
   /* ponytail: smooth dropdown — animate max-height + opacity instead of
@@ -869,6 +911,42 @@
 
   <section class="stats" id="stats"></section>
 
+  <!-- ponytail: the "these numbers don't match my profile" panel, parked
+  directly under the stat cards because that is where the question gets asked.
+  Collapsed by default so the page still lands stats-first. -->
+  <section id="reconcile-section" class="disabled-section reconcile-section" hidden data-collapsed="true">
+    <h2>
+      <span class="disabled-heading">
+        Doesn't match Instagram?
+        <span class="count" id="reconcile-count">0</span>
+      </span>
+      <button class="recheck-btn" id="reconcile-scan" type="button">Find the difference</button>
+    </h2>
+    <button class="disclosure-toggle" id="reconcile-toggle" type="button"
+            aria-expanded="false" aria-controls="reconcile-body"
+            aria-label="Show count reconciliation">
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"
+           fill="none" stroke="currentColor" stroke-width="2.4"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 9l6 6 6-6"/>
+      </svg>
+    </button>
+    <div class="disabled-body" id="reconcile-body">
+      <p class="explainer">
+        Your data export is a point-in-time file listing every handle in your
+        graph when Instagram generated it. Instagram's own profile counter
+        <em>hides</em> accounts it no longer serves &mdash; deactivated, deleted,
+        and banned ones &mdash; so an export routinely lists more people than
+        instagram.com admits to. Re-downloading the export never fixes that;
+        finding those accounts and flagging them does.
+      </p>
+      <div class="ledger" id="reconcile-ledger"></div>
+      <p class="explainer" id="reconcile-files" hidden></p>
+      <p class="explainer" id="reconcile-scan-note" hidden></p>
+      <ul class="list" id="reconcile-list" hidden></ul>
+    </div>
+  </section>
+
   <section class="split" id="relationship-panels">
     <article class="panel">
       <h2>People I don't follow back <span class="count" id="nfb-count">0</span></h2>
@@ -1026,6 +1104,11 @@ const $ = (id) => document.getElementById(id);
 const state = {
   data: null,
   liveCounts: null,
+  audit: null,
+  // ponytail: kept OUT of state.audit so a report reload (e.g. after flagging
+  // one of the accounts the scan surfaced) repaints the ledger without
+  // throwing away the scan the user just waited a minute for.
+  scan: null,
   ig: { state: "logged_out", polling: false },
   filters: { nfb: "", dfmb: "", disabled: "", unilateral: "" },
   profile: { enabled: false, activeId: null, profiles: [], legacyNeedsUsername: false, busy: 0 },
@@ -1264,6 +1347,161 @@ async function refreshLiveCounts() {
   state.liveCounts = result.counts || null;
   const snapshot = latestSnapshot();
   if (snapshot) renderStats(snapshot);
+  // ponytail: the server-side audit reads live counts from the cache this call
+  // populates, so re-pull it once — otherwise the ledger says "unknown" until
+  // the next page load even though the cards already show live numbers.
+  if (state.liveCounts && state.audit && !state.audit.live_available) await loadReconcile();
+}
+
+// ponytail: the ledger walks the same arithmetic run_analyze does, in the same
+// order, so a user can point at the exact step where their number diverges
+// from instagram.com instead of concluding the app is just wrong.
+function ledgerRow(label, side) {
+  const el = document.createElement("div");
+  el.className = "ledger-row";
+  const steps = [`<b>${side.records.toLocaleString()}</b> records in the export`];
+  if (side.duplicates > 0) {
+    steps.push(`&minus; ${side.duplicates.toLocaleString()} duplicate handle${side.duplicates === 1 ? "" : "s"}`);
+  }
+  if (side.flagged > 0) {
+    steps.push(`&minus; ${side.flagged.toLocaleString()} flagged as disabled`);
+  }
+  steps.push(`= <b>${side.active.toLocaleString()}</b> counted here`);
+
+  let verdict, cls;
+  if (side.live === null) {
+    verdict = "Instagram's own number is unknown — log into Instagram (button in the flagged panel) to compare live.";
+    cls = "unknown";
+  } else if (side.gap > 0) {
+    verdict = `Instagram shows ${side.live.toLocaleString()} — ${side.gap.toLocaleString()} account${side.gap === 1 ? "" : "s"} in your export that Instagram no longer counts.`;
+    cls = "gap";
+  } else if (side.gap < 0) {
+    verdict = `Instagram shows ${side.live.toLocaleString()} — your export is ${(-side.gap).toLocaleString()} behind. Download a fresh export.`;
+    cls = "gap";
+  } else {
+    verdict = `Instagram shows ${side.live.toLocaleString()} — reconciled.`;
+    cls = "match";
+  }
+  el.innerHTML = `
+    <div class="side">${label}</div>
+    <div class="math">${steps.join(' <span class="step">·</span> ')}</div>
+    <span class="verdict ${cls}">${verdict}</span>
+  `;
+  return el;
+}
+
+function renderReconcile() {
+  const section = $("reconcile-section");
+  const audit = state.audit;
+  if (!audit) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+
+  const ledger = $("reconcile-ledger");
+  ledger.innerHTML = "";
+  ledger.appendChild(ledgerRow("Followers", audit.followers));
+  ledger.appendChild(ledgerRow("Following", audit.following));
+
+  // Headline badge: the unexplained accounts, or the scan's findings once run.
+  const gaps = [audit.followers.gap, audit.following.gap].filter((g) => typeof g === "number" && g > 0);
+  const badge = $("reconcile-count");
+  if (state.scan) badge.textContent = `${state.scan.gone.length}`;
+  else if (gaps.length) badge.textContent = `${gaps.reduce((a, b) => a + b, 0)}`;
+  else badge.textContent = "0";
+
+  // Any export file we deliberately did not count. following_hashtags.json
+  // living here instead of in the following bucket IS the fix — say so.
+  const files = $("reconcile-files");
+  const ignored = audit.ignored_files || [];
+  if (ignored.length) {
+    files.hidden = false;
+    files.innerHTML = "Not counted (these sit in the export folder but aren't people you follow): "
+      + ignored.map((n) => `<code>${n}</code>`).join(", ") + ".";
+  } else {
+    files.hidden = true;
+  }
+
+  renderScanResults();
+}
+
+function renderScanResults() {
+  const note = $("reconcile-scan-note");
+  const list = $("reconcile-list");
+  const scan = state.scan;
+  list.innerHTML = "";
+  if (!scan) {
+    note.hidden = true;
+    list.hidden = true;
+    return;
+  }
+  note.hidden = false;
+  const bits = [`Checked ${scan.checked.toLocaleString()} account${scan.checked === 1 ? "" : "s"}: `
+    + `<b>${scan.gone.length}</b> no longer have a live Instagram page`
+    + `, ${scan.unclear.length} Instagram wouldn't answer for.`];
+  if (!scan.authenticated) {
+    bits.push("Anonymous checks get rate-limited quickly — logging into Instagram makes this pass far more decisive.");
+  }
+  if (scan.gone.length) {
+    bits.push("Flag these to take them out of your active counts. A handle can also read as gone because the person <em>renamed</em>, so glance at the list before flagging.");
+  }
+  note.innerHTML = bits.join(" ");
+  const flaggedNow = new Set(((latestSnapshot() || {}).disabled_accounts || []).map((r) => r.username));
+  if (!scan.gone.length) {
+    list.hidden = true;
+    return;
+  }
+  list.hidden = false;
+  for (const r of scan.gone) {
+    list.appendChild(row(r, { flagButton: flaggedNow.has(r.username) ? "remove" : true }));
+  }
+}
+
+async function loadReconcile() {
+  try {
+    const r = await fetch("/count-audit", { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const result = await r.json();
+    state.audit = result.audit || null;
+  } catch (e) {
+    console.error("count audit failed:", e);
+    state.audit = null;
+  }
+  renderReconcile();
+}
+
+async function scanForGoneAccounts() {
+  const btn = $("reconcile-scan");
+  if (btn.disabled || state.profile.busy) return;
+  setProfileBusy(true);
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = "Checking…";
+  setProfileStatus("Checking every account in your export against instagram.com — this can take a minute…");
+  try {
+    const r = await fetch("/count-audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "both" }),
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error((JSON.parse(text).error) || text || `HTTP ${r.status}`);
+    const result = JSON.parse(text);
+    state.audit = result.audit || null;
+    state.scan = (result.audit && result.audit.scan) || null;
+    renderReconcile();
+    const gone = state.scan ? state.scan.gone.length : 0;
+    setProfileStatus(gone
+      ? `Found ${gone} account${gone === 1 ? "" : "s"} with no live Instagram page.`
+      : "Every account in your export still has a live Instagram page.");
+  } catch (e) {
+    setProfileStatus(`Account check failed: ${e.message}`, true);
+  } finally {
+    btn.textContent = original;
+    btn.disabled = false;
+    setProfileBusy(false);
+  }
 }
 
 function renderPanel(listId, countId, records, total, filterKey, rowOpts = {}) {
@@ -1625,6 +1863,7 @@ function render() {
   renderUnilateralPanel(state.data);
   const s = latestSnapshot();
   if (!s) {
+    $("reconcile-section").hidden = true;
     $("stats").innerHTML = "";
     $("stats").hidden = true;
     $("relationship-panels").hidden = true;
@@ -1649,6 +1888,7 @@ function render() {
   renderPanel("nfb-list",  "nfb-count",  s.not_followed_back,   s.not_followed_back.length,   "nfb",  { flagButton: true });
   renderPanel("dfmb-list", "dfmb-count", s.dont_follow_me_back, s.dont_follow_me_back.length, "dfmb", { flagButton: true });
   renderDisabledPanel(s);
+  renderReconcile();
 }
 
 function wireSearch() {
@@ -1689,6 +1929,9 @@ async function load(strictSnapshots = false) {
     if (strictSnapshots) throw e;
   }
   refreshLiveCounts().catch((e) => console.error("live count check failed:", e));
+  // ponytail: awaited (unlike live counts) so the ledger is never a frame
+  // behind the cards it explains after a flag/import mutation.
+  await loadReconcile();
 }
 
 // ponytail: only digits survive, then dashes slot in after positions 2 and 5.
@@ -1775,7 +2018,9 @@ async function bootstrap() {
   wireSearch();
   wireFlagButtons();
   $("recheck-disabled").addEventListener("click", igButtonClick);
+  $("reconcile-scan").addEventListener("click", scanForGoneAccounts);
   await refreshIgStatus();
+  wireDisclosure("reconcile-toggle", "reconcile-section", "Show count reconciliation", "Hide count reconciliation");
   wireDisclosure("disabled-toggle", "disabled-section", "Show flagged accounts", "Hide flagged accounts");
   wireDisclosure(
     "unilateral-toggle",

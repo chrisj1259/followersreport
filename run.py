@@ -9,6 +9,7 @@ Usage:
     python run.py --check-disabled
     python run.py 9000
     python run.py --check-disabled 9000
+    python run.py audit [--check-network] [--scope both] [--flag-gone]
     python run.py --help
 
 Reads every `*.json` file in each `data/<MM-DD-YYYY>/` subfolder and routes
@@ -16,6 +17,12 @@ by filename substring to a bucket:
 
   *follower* / *folower*  -> followers  (people who follow me)
   *following*             -> following  (people I follow)
+
+...but only after NON_RELATIONSHIP_FILE_MARKERS vetoes the export files that
+merely *look* like relationship lists (following_hashtags.json,
+pending_follow_requests.json, recently_unfollowed_profiles.json, ...). Counting
+those is the single most common cause of "the app says I follow more people
+than Instagram does".
 
 Each JSON is the conventional Instagram export shape:
 
@@ -579,6 +586,18 @@ def _live_profile_counts() -> dict[str, int] | None:
     return counts
 
 
+def cached_live_profile_counts() -> dict[str, int] | None:
+    """Live counts ONLY if a previous /live-counts call already fetched them.
+
+    _live_profile_counts() can spawn a headless Chrome and block for up to 90
+    seconds. The server is single-threaded, so calling it from the count audit
+    would stall the whole page on load. The UI asks /live-counts on every load
+    anyway; this reads whatever that left behind and otherwise reports unknown.
+    """
+    active = _profiles_payload()["active_profile_id"]
+    return LIVE_PROFILE_COUNTS.get(active) if active else None
+
+
 def recheck_flagged_accounts_by_network(*, timeout: float = 4.0,
                                          authenticated: bool = False) -> list[str]:
     """Unflag saved handles only when Instagram positively shows an active profile."""
@@ -723,6 +742,43 @@ def username_from_href(href: str) -> str:
     return kept[-1].lower()
 
 
+# Instagram's export ships far more than followers_1.json / following.json in
+# the same folder: close_friends.json, blocked_profiles.json,
+# pending_follow_requests.json, recently_unfollowed_profiles.json and — the
+# expensive one — following_hashtags.json. A naive `"following" in name` router
+# files every hashtag you follow into the following bucket, and the headline
+# count then overshoots instagram.com by exactly the number of hashtags you
+# follow. These markers veto a filename before follower/following is consulted.
+NON_RELATIONSHIP_FILE_MARKERS = (
+    "hashtag", "close_friend", "blocked", "restricted", "pending",
+    "request", "unfollowed", "hide_story", "removed_suggest", "suggested",
+    "dismissed", "recently_followed",
+)
+
+# Followed hashtags and locations live at /explore/tags/<tag> and
+# /explore/locations/<id>; a real person is at /<username>. Belt-and-braces for
+# the filename veto above, since an export renamed by hand can still smuggle a
+# hashtag list into a followers/following bucket.
+NON_PROFILE_HREF_MARKER = "/explore/"
+
+
+def bucket_for_filename(name: str) -> str | None:
+    """Route an export filename to 'followers', 'following', or None.
+
+    Single source of truth for both read_snapshot (which globs a staged
+    snapshot folder) and _stage_snapshot (which picks files out of a raw
+    export folder), so the two can never disagree about what counts.
+    """
+    n = name.lower()
+    if any(marker in n for marker in NON_RELATIONSHIP_FILE_MARKERS):
+        return None
+    if "follower" in n or "folower" in n:
+        return "followers"
+    if "following" in n:
+        return "following"
+    return None
+
+
 def load_json_records(path: Path) -> list[dict]:
     """Read a conventional Instagram JSON export and return [{'username','ts'}, ...].
 
@@ -764,6 +820,12 @@ def load_json_records(path: Path) -> list[dict]:
             continue
         sld = rec.get("string_list_data") or []
         if not isinstance(sld, list) or not sld:
+            continue
+        # A followed hashtag/location is not a person. Its 'value' is the plain
+        # tag name, indistinguishable from a username, so the href is the only
+        # reliable tell — drop the record before it can inflate a count.
+        if any(NON_PROFILE_HREF_MARKER in str(e.get("href") or "")
+               for e in sld if isinstance(e, dict)):
             continue
         u, ts = "", None
         # Primary: the modern 'value' field on string_list_data entries.
@@ -875,17 +937,24 @@ def read_snapshot(folder: Path, flagged: set[str]) -> tuple[dict, list[dict], li
     Headline totals and returned lists still reflect the unfiltered export.
     """
     buckets: dict[str, list[dict]] = {"followers": [], "following": []}
+    # ponytail: every JSON in the folder is reported in source_files — including
+    # the ones that were skipped — so `run.py audit` can show a user exactly
+    # which files fed which headline number instead of leaving them to guess.
+    source_files: list[dict] = []
     for f in sorted(folder.glob("*.json")):
-        n = f.name.lower()
         recs = load_json_records(f)
-        if not recs:
+        bucket = bucket_for_filename(f.name)
+        source_files.append({"name": f.name, "bucket": bucket, "records": len(recs)})
+        if not recs or bucket is None:
+            # ponytail: unrecognized exports are silently ignored — better than
+            # raising on Instagram's ever-growing export surface.
             continue
-        if "follower" in n or "folower" in n:
-            buckets["followers"].extend(recs)
-        elif "following" in n:
-            buckets["following"].extend(recs)
-        # ponytail: unrecognized exports are silently ignored — better than
-        # raising on Instagram's ever-growing export surface.
+        buckets[bucket].extend(recs)
+
+    # Records as read off disk, before per-username dedupe. followers_1.json +
+    # followers_2.json legitimately overlap on large accounts, so the gap
+    # between this and the unique count is worth reporting rather than hiding.
+    read_counts = {k: len(v) for k, v in buckets.items()}
 
     raw: dict[str, list[dict]] = {"followers": [], "following": []}
     flagged_by_username: dict[str, dict] = {}
@@ -915,7 +984,17 @@ def read_snapshot(folder: Path, flagged: set[str]) -> tuple[dict, list[dict], li
             "dont_follow_me_back":len(gset - fset),
             "mutuals":            len(fset & gset),
             "flagged":            len(flagged_records),
+            # Reconciliation trail: export records read -> unique handles ->
+            # handles left after flags. `run.py audit` and the UI's "Doesn't
+            # match Instagram?" panel walk exactly these numbers.
+            "follower_records":   read_counts["followers"],
+            "following_records":  read_counts["following"],
+            "duplicate_followers": read_counts["followers"] - len(raw_fset),
+            "duplicate_following": read_counts["following"] - len(raw_gset),
+            "flagged_followers":  len(raw_fset - fset),
+            "flagged_following":  len(raw_gset - gset),
         },
+        "source_files": source_files,
         "not_followed_back":   by_ts_desc([by_u_f[u] for u in fset - gset]),
         "dont_follow_me_back": by_ts_desc([by_u_g[u] for u in gset - fset]),
         "mutuals":             [by_u_f[u] for u in (fset & gset)],
@@ -989,6 +1068,200 @@ def fold_pair(prev: tuple[str, list[dict], list[dict]],
     }
 
 
+# ---------- count reconciliation ("why doesn't this match Instagram?") ----------
+
+AUDIT_SCOPES = ("following", "followers", "both")
+
+
+def latest_snapshot_folder() -> Path | None:
+    """Newest correctly-named data/<MM-DD-YYYY>/ folder, or None if there is none."""
+    if not DATA.exists():
+        return None
+    dated = []
+    for entry in DATA.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            dated.append((parse_folder_date(entry.name), entry))
+        except ValueError:
+            continue
+    return max(dated)[1] if dated else None
+
+
+def scan_handles_for_disabled(usernames: list[str], *, timeout: float = 8.0,
+                              workers: int = 4, label: str = "") -> dict[str, bool | None]:
+    """Anonymously probe each handle's profile page; verify positives when a
+    saved Instagram login is available.
+
+    Returns {username: True (page reads as gone) | False (live profile) |
+    None (Instagram wouldn't say)}. The authenticated pass only ever *clears*
+    a handle — ig_helper reports "active" or "unverified" and never claims a
+    profile is gone — so a rate-limited anonymous probe can't strand a live
+    account in the results.
+    """
+    if not usernames:
+        return {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(usernames))) as pool:
+        verdicts = dict(zip(usernames, pool.map(lambda u: looks_disabled(u, timeout), usernames)))
+
+    suspects = sorted(u for u, v in verdicts.items() if v is True)
+    if suspects and ig_authenticated():
+        statuses = _authenticated_statuses(suspects)
+        for username, status in (statuses or {}).items():
+            if status is False:          # logged-in Instagram sees a live profile
+                verdicts[username] = False
+    if label:
+        gone = sum(1 for v in verdicts.values() if v is True)
+        unclear = sum(1 for v in verdicts.values() if v is None)
+        print(f"  [{label}] {len(usernames)} checked, {gone} gone, {unclear} unclear", flush=True)
+    return verdicts
+
+
+def _reconcile_side(counts: dict, live: dict | None, side: str) -> dict:
+    """Per-card arithmetic: export records -> unique handles -> after flags,
+    then the residual gap against Instagram's own number when we have it."""
+    unique = counts[side]
+    active = counts[f"active_{side}"]
+    live_value = (live or {}).get(side)
+    return {
+        "records":    counts.get(f"{'follower' if side == 'followers' else 'following'}_records", unique),
+        "unique":     unique,
+        "duplicates": counts.get(f"duplicate_{side}", 0),
+        "flagged":    counts.get(f"flagged_{side}", unique - active),
+        "active":     active,
+        "live":       live_value if isinstance(live_value, int) else None,
+        # Positive gap = the export lists more accounts than instagram.com
+        # shows, which is what deactivated/deleted accounts look like.
+        "gap":        (active - live_value) if isinstance(live_value, int) else None,
+    }
+
+
+def audit_counts(*, check_network: bool = False, scope: str = "both",
+                 timeout: float = 8.0, fetch_live: bool = False) -> dict:
+    """Explain, number by number, how the headline counts were reached.
+
+    Instagram's profile page hides accounts it no longer serves — deactivated,
+    deleted, and banned ones — but the data export you downloaded still lists
+    every handle that was in your graph when the export was generated. That is
+    the usual reason "following" reads higher here than on instagram.com, and
+    no amount of re-importing fixes it, because the export is faithfully
+    reporting what Instagram gave it.
+
+    With check_network=True this walks the export and names the specific
+    handles whose profile pages are gone, so they can be flagged and the two
+    numbers brought back into agreement.
+    """
+    if scope not in AUDIT_SCOPES:
+        raise ValueError(f"scope must be one of {', '.join(AUDIT_SCOPES)}")
+    folder = latest_snapshot_folder()
+    if folder is None:
+        raise FileNotFoundError("no dated snapshot folders in data/ — import an export first")
+
+    flagged = _read_flagged()
+    summary, raw_followers, raw_following = read_snapshot(folder, flagged)
+    counts = summary["counts"]
+    # The CLI has no page to stall, so it may pay for a live fetch; the HTTP
+    # handler must not, so it reads the cache the UI has already warmed.
+    try:
+        live = _live_profile_counts() if fetch_live else cached_live_profile_counts()
+    except OSError:
+        live = None
+
+    audit = {
+        "date_folder": summary["date_folder"],
+        "date_iso": summary["date_iso"],
+        "source_files": summary["source_files"],
+        "ignored_files": [f["name"] for f in summary["source_files"] if f["bucket"] is None],
+        "flagged_total": len(flagged),
+        "live_available": live is not None,
+        "followers": _reconcile_side(counts, live, "followers"),
+        "following": _reconcile_side(counts, live, "following"),
+        "scan": None,
+    }
+    if not check_network:
+        return audit
+
+    pools = {"followers": raw_followers, "following": raw_following}
+    wanted = ("followers", "following") if scope == "both" else (scope,)
+    handles: dict[str, dict] = {}
+    for side in wanted:
+        for record in pools[side]:
+            # Already-flagged handles are skipped — "Recheck statuses" is the
+            # path that re-verifies those, and re-probing them here would just
+            # spend requests confirming what the user already told us.
+            if record["username"] not in flagged:
+                handles.setdefault(record["username"], record)
+
+    usernames = sorted(handles)
+    print(f"scanning {len(usernames)} handle(s) in scope '{scope}' against instagram.com...", flush=True)
+    verdicts = scan_handles_for_disabled(usernames, timeout=timeout, label=scope)
+    gone = [handles[u] for u, v in verdicts.items() if v is True]
+    audit["scan"] = {
+        "scope": scope,
+        "checked": len(usernames),
+        "gone": by_ts_desc(gone),
+        "unclear": sorted(u for u, v in verdicts.items() if v is None),
+        "live_profiles": sum(1 for v in verdicts.values() if v is False),
+        "authenticated": ig_authenticated(),
+    }
+    return audit
+
+
+def _print_side(label: str, side: dict) -> None:
+    print(f"  {label}")
+    print(f"    records read from export : {side['records']}")
+    if side["duplicates"]:
+        print(f"    duplicate handles removed: {side['duplicates']}")
+    print(f"    unique handles           : {side['unique']}")
+    print(f"    flagged as disabled      : {side['flagged']}")
+    print(f"    counted as active        : {side['active']}")
+    if side["live"] is None:
+        print(f"    instagram.com says       : unknown (log in for live counts)")
+    else:
+        print(f"    instagram.com says       : {side['live']}")
+        if side["gap"] > 0:
+            print(f"    ** {side['gap']} more in your export than Instagram shows **")
+        elif side["gap"] < 0:
+            print(f"    ** {-side['gap']} fewer in your export than Instagram shows **")
+        else:
+            print(f"    reconciled — the numbers agree")
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    """CLI: python run.py audit [--check-network] [--scope ...] [--flag-gone]"""
+    audit = audit_counts(check_network=args.check_network, scope=args.scope,
+                         fetch_live=True)
+    print(f"snapshot data/{audit['date_folder']}/")
+    for f in audit["source_files"]:
+        role = f["bucket"] or "ignored (not a relationship list)"
+        print(f"  {f['name']:<44} {f['records']:>6} records -> {role}")
+    print()
+    _print_side("FOLLOWERS", audit["followers"])
+    print()
+    _print_side("FOLLOWING", audit["following"])
+
+    scan = audit["scan"]
+    if scan is None:
+        print("\nRe-run with --check-network to find the specific accounts behind a gap.")
+        return
+
+    print(f"\nchecked {scan['checked']} handle(s); "
+          f"{len(scan['gone'])} look gone, {len(scan['unclear'])} unclear.")
+    if not scan["authenticated"]:
+        print("(no saved Instagram login — anonymous probes get rate-limited, so "
+              "'unclear' can be large. Log in from the app for a cleaner pass.)")
+    for record in scan["gone"]:
+        print(f"  [gone] @{record['username']}")
+    if scan["gone"] and args.flag_gone:
+        for record in scan["gone"]:
+            add_flagged(record["username"])
+        print(f"flagged {len(scan['gone'])} account(s) as disabled — "
+              f"re-run `python run.py` to rebuild the report.")
+    elif scan["gone"]:
+        print("\nRe-run with --flag-gone to move these into the disabled panel, "
+              "or flag them individually in the app.")
+
+
 # ---------- http server (static files only) ----------
 
 
@@ -1015,7 +1288,8 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/login-instagram":
             self._handle_login_instagram()
             return
-        if self.path in ("/flag", "/import", "/delete", "/recheck-disabled") and self._reject_without_profile():
+        if self.path in ("/flag", "/import", "/delete", "/recheck-disabled",
+                         "/count-audit") and self._reject_without_profile():
             return
         if self.path == "/flag":
             self._handle_flag()
@@ -1025,6 +1299,8 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_delete()
         elif self.path == "/recheck-disabled":
             self._handle_recheck_disabled()
+        elif self.path == "/count-audit":
+            self._handle_count_audit(check_network=True)
         else:
             self.send_error(404, "no such endpoint")
 
@@ -1054,6 +1330,11 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "counts": _live_profile_counts()})
             except OSError as e:
                 self.send_error(500, f"could not check live counts: {e}")
+            return
+        if self.path == "/count-audit":
+            if self._reject_without_profile():
+                return
+            self._handle_count_audit(check_network=False)
             return
         if self.path == "/ig-status":
             self._send_json(200, {"ok": True, "state": instagram_login_state()})
@@ -1178,6 +1459,62 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             "reenabled": reenabled,
             "remaining": len(_read_flagged()),
         })
+
+    def _handle_count_audit(self, *, check_network: bool) -> None:
+        """GET /count-audit  — instant arithmetic behind the headline numbers.
+        POST /count-audit — same, plus a network sweep naming the handles whose
+                            Instagram pages are gone. Optional JSON body:
+                            {"scope": "following"|"followers"|"both",
+                             "flag_gone": bool}.
+
+        ponytail: the POST can run for a minute on a large export and the
+        server is single-threaded, so the UI disables itself for the duration
+        exactly like /recheck-disabled does. Auto-flagging is opt-in via
+        flag_gone — a rate-limited anonymous sweep should never mass-flag
+        somebody's following list behind their back.
+        """
+        scope, flag_gone = "both", False
+        if check_network:
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+            except ValueError:
+                self.send_error(400, "malformed Content-Length header")
+                return
+            if length > 4096:
+                self.send_error(400, "oversized body")
+                return
+            if length > 0:
+                try:
+                    body = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    self.send_error(400, "bad json body")
+                    return
+                scope = str(body.get("scope", scope)).strip().lower() or scope
+                flag_gone = body.get("flag_gone") is True
+        try:
+            audit = audit_counts(check_network=check_network, scope=scope)
+        except ValueError as e:
+            self.send_error(400, str(e))
+            return
+        except FileNotFoundError as e:
+            self._send_json(409, {"ok": False, "error": str(e)})
+            return
+        except OSError as e:
+            self.send_error(500, f"count audit failed: {e}")
+            return
+
+        flagged_now: list[str] = []
+        if flag_gone and audit.get("scan"):
+            try:
+                for record in audit["scan"]["gone"]:
+                    add_flagged(record["username"])
+                    flagged_now.append(record["username"])
+                if flagged_now:
+                    _refresh_active_report()
+            except OSError as e:
+                self.send_error(500, f"could not flag accounts: {e}")
+                return
+        self._send_json(200, {"ok": True, "audit": audit, "flagged": flagged_now})
 
     def _handle_list_snapshots(self) -> None:
         """GET /snapshots -- return every dated folder on disk as JSON.
@@ -1504,8 +1841,10 @@ def _list_snapshots() -> tuple[list[dict], list[str]]:
     DATA surfaces via the /snapshots warnings field instead of being
     silently pruned -- a CLI user sees the same warning on stderr from
     run_analyze, a GUI user now sees it on the manage panel. Counts via
-    load_json_records (NOT read_snapshot's full summary) -- intentional
-    cost-skip since the listing UI just needs record counts.
+    load_json_records + bucket_for_filename (NOT read_snapshot's full
+    summary) -- intentional cost-skip since the listing UI just needs unique
+    handle counts, but it must route and dedupe identically or the inventory
+    panel disagrees with the stat cards.
     """
     items: list[dict] = []
     warnings: list[str] = []
@@ -1523,16 +1862,19 @@ def _list_snapshots() -> tuple[list[dict], list[str]]:
         dated.append((dt, p))
     dated.sort(key=lambda t: t[0])
     for _, p in dated:
-        n_f, n_g = 0, 0
+        # ponytail: same router AND same per-username dedupe as read_snapshot.
+        # Summing raw record counts through a substring match was a third,
+        # divergent copy of the counting rule — it double-counted handles
+        # shared by followers_1.json/followers_2.json and swallowed
+        # following_hashtags.json whole, so this panel could contradict the
+        # stat cards sitting directly above it.
+        seen: dict[str, set[str]] = {"followers": set(), "following": set()}
         for f in sorted(p.glob("*.json")):
-            n = f.name.lower()
-            recs = load_json_records(f)
-            if not recs:
+            bucket = bucket_for_filename(f.name)
+            if bucket is None:
                 continue
-            if "follower" in n or "folower" in n:
-                n_f += len(recs)
-            elif "following" in n:
-                n_g += len(recs)
+            seen[bucket].update(r["username"] for r in load_json_records(f))
+        n_f, n_g = len(seen["followers"]), len(seen["following"])
         # ponytail: folder mtime is set on Folder.mkdir() in _stage_snapshot
         # and only changes on a subsequent overwriting re-import. Use it as
         # "imported_at" -- the user can see at-a-glance when each snapshot
@@ -1585,9 +1927,11 @@ def _stage_snapshot(src: Path, date_str: str) -> tuple[int, int]:
     """Source-of-truth for staging a new dated snapshot. Shared by the `import`
     CLI subcommand so the on-disk format stays predictable.
 
-    ponytail: substring-routes the source files exactly like read_snapshot does,
-    so 'folowers_May2026.json' -> followers bucket, 'who_i_follow.json' ->
-    following bucket, etc. Pre-parses both files so a malformed export produces
+    ponytail: routes the source files through bucket_for_filename, exactly like
+    read_snapshot does, so 'folowers_May2026.json' -> followers bucket while
+    'following_hashtags.json' (a real file sitting right next to
+    following.json in every export) is vetoed instead of silently becoming
+    your following list. Pre-parses both files so a malformed export produces
     a clean error BEFORE we touch data/.
     """
     src = src.resolve()
@@ -1600,10 +1944,10 @@ def _stage_snapshot(src: Path, date_str: str) -> tuple[int, int]:
     for f in sorted(src.iterdir()):
         if not f.is_file():
             continue
-        n = f.name.lower()
-        if follower_src is None and ("follower" in n or "folower" in n):
+        bucket = bucket_for_filename(f.name)
+        if bucket == "followers" and follower_src is None:
             follower_src = f
-        elif following_src is None and "following" in n:
+        elif bucket == "following" and following_src is None:
             following_src = f
 
     if follower_src is None:
@@ -1658,7 +2002,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Default mode (no subcommand): analyze + serve.\n"
             "  python run.py [port] [--check-disabled]\n\n"
             "Subcommand 'import': stage a raw-export folder into data/<date>/.\n"
-            "  python run.py import <src_dir> --date MM-DD-YYYY\n"
+            "  python run.py import <src_dir> --date MM-DD-YYYY\n\n"
+            "Subcommand 'audit': explain where the headline counts came from and\n"
+            "why they may disagree with instagram.com.\n"
+            "  python run.py audit [--check-network] [--scope both] [--flag-gone]\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1675,7 +2022,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "and requires network.",
     )
 
-    if argv and argv[0] == "import":
+    if argv and argv[0] in ("import", "audit"):
         sub = p.add_subparsers(dest="subcommand", required=True)
         p_imp = sub.add_parser(
             "import",
@@ -1690,6 +2037,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p_imp.add_argument(
             "--date", dest="date_str", required=True,
             help="Date the data was pulled from (must be MM-DD-YYYY).",
+        )
+        p_aud = sub.add_parser(
+            "audit",
+            help="Explain the headline counts and reconcile them with instagram.com.",
+            description=(
+                "Walk the arithmetic behind the followers/following cards: which "
+                "export files were counted, which were ignored, how many duplicate "
+                "and flagged handles were removed, and — with --check-network — "
+                "which specific accounts in your export no longer have a live "
+                "Instagram page. Deactivated, deleted, and banned accounts stay in "
+                "your data export but are not counted by instagram.com, which is "
+                "the usual reason the two numbers differ."
+            ),
+        )
+        p_aud.add_argument(
+            "--check-network", action="store_true",
+            help="Probe every handle in scope against instagram.com and list the "
+                 "ones whose page is gone. Slow (~0.2s/handle) and needs network.",
+        )
+        p_aud.add_argument(
+            "--scope", choices=AUDIT_SCOPES, default="both",
+            help="Which list(s) --check-network sweeps (default: both).",
+        )
+        p_aud.add_argument(
+            "--flag-gone", action="store_true",
+            help="Also add every confirmed-gone handle to disabledaccounts.json.",
         )
     else:
         p.add_argument(
@@ -1817,7 +2190,18 @@ def run_analyze(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
-    if args.subcommand == "import":
+    if args.subcommand == "audit":
+        # Mirror `import`: only switch to per-account storage when the app has
+        # already created it, so a source-only data/ layout still audits.
+        if (ROOT / "profiles.json").exists():
+            enable_profile_mode(ROOT, ROOT / "dist")
+            if _profiles_payload()["active_profile_id"] is None:
+                raise SystemExit("select or create an account in the browser before auditing")
+        try:
+            cmd_audit(args)
+        except (FileNotFoundError, ValueError) as e:
+            raise SystemExit(str(e))
+    elif args.subcommand == "import":
         if (ROOT / "profiles.json").exists():
             enable_profile_mode(ROOT, ROOT / "dist")
             if _profiles_payload()["active_profile_id"] is None:
