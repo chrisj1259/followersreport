@@ -157,6 +157,18 @@ Two things cause a gap, and they have different fixes:
   handle can also read as gone because the person *renamed*, so glance at the
   list before flagging — with two or more snapshots on disk the app detects
   renames on its own from the follow timestamp.
+
+  **Log into Instagram first.** Instagram login-walls anonymous profile views,
+  and a walled response looks exactly like a rate-limited one, so without a
+  saved session most handles come back *unverified* and the scan can't tell you
+  much. The authenticated pass sees private and walled profiles and does the
+  bulk of the clearing.
+
+  Results come back in three buckets: **confirmed gone** (safe to flag),
+  **confirmed active**, and **couldn't be established either way**. Nothing is
+  auto-flagged. If your count is still off after flagging the confirmed ones,
+  the account you're looking for is in that third list — open each one and see
+  whether it loads.
 - **A stale export.** Instagram builds the file when you *request* it, not when
   you download it. Anything you followed or unfollowed in between is missing.
   Request a new export.

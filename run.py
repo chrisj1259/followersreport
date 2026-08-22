@@ -64,6 +64,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import uuid
@@ -561,6 +562,40 @@ def _authenticated_statuses(usernames: list[str]) -> dict[str, bool | None] | No
     if statuses is None:
         return None
     return {u: False if statuses.get(u) == "active" else None for u in usernames}
+
+
+# One profile page per handle through a real headless Chrome is a few seconds
+# of work, so a whole following list has to be batched: a single subprocess
+# call for 100 handles would need a ~35 minute timeout with no progress and no
+# partial result if it died at handle 99.
+AUTH_STATUS_BATCH = 20
+
+
+def _authenticated_raw_statuses(usernames: list[str], *,
+                                progress=None) -> dict[str, str] | None:
+    """{username: 'active' | 'unverified'} from the saved login, or None if the
+    authenticated checker is unavailable entirely.
+
+    _authenticated_statuses() collapses 'unverified' to None on purpose — it
+    exists to un-flag accounts and must never claim a profile is gone. The
+    count audit needs the distinction kept: 'unverified' is precisely the
+    shortlist of handles worth looking at by hand.
+    """
+    if not usernames:
+        return {}
+    out: dict[str, str] = {}
+    for i in range(0, len(usernames), AUTH_STATUS_BATCH):
+        batch = usernames[i:i + AUTH_STATUS_BATCH]
+        statuses = _scrapling_result("status", batch, 30 + 20 * len(batch))
+        if statuses is None:
+            # Session died or the helper is missing. Partial results are still
+            # worth returning; nothing here is treated as evidence of absence.
+            return out or None
+        for username in batch:
+            out[username] = "active" if statuses.get(username) == "active" else "unverified"
+        if progress:
+            progress(len(out), len(usernames))
+    return out
 
 
 def _authenticated_profile_counts(username: str) -> dict[str, int] | None:
@@ -1088,32 +1123,60 @@ def latest_snapshot_folder() -> Path | None:
     return max(dated)[1] if dated else None
 
 
-def scan_handles_for_disabled(usernames: list[str], *, timeout: float = 8.0,
-                              workers: int = 4, label: str = "") -> dict[str, bool | None]:
-    """Anonymously probe each handle's profile page; verify positives when a
-    saved Instagram login is available.
+# Scan verdicts. Deliberately three-way: "we could not establish this" is a
+# different and far more common answer than "this account is gone", and
+# collapsing the two is what makes a scan look like it found nothing.
+GONE, ACTIVE, UNVERIFIED = "gone", "active", "unverified"
 
-    Returns {username: True (page reads as gone) | False (live profile) |
-    None (Instagram wouldn't say)}. The authenticated pass only ever *clears*
-    a handle — ig_helper reports "active" or "unverified" and never claims a
-    profile is gone — so a rate-limited anonymous probe can't strand a live
-    account in the results.
+
+def scan_handles_for_disabled(usernames: list[str], *, timeout: float = 8.0,
+                              workers: int = 4, label: str = "",
+                              progress=None) -> dict[str, str]:
+    """Establish, per handle, whether Instagram still serves a profile page.
+
+    Returns {username: GONE | ACTIVE | UNVERIFIED}.
+
+    The saved login runs FIRST when there is one. Instagram login-walls
+    anonymous profile views heavily, and an anonymous request that gets walled
+    is indistinguishable from one that got rate-limited — so leading with the
+    anonymous probe means a scan can return "unclear" for every handle and
+    surface nothing. The authenticated pass is the only one that can see
+    private and login-walled profiles, so it does the bulk of the clearing and
+    the anonymous probe is left to confirm the few handles it could not.
+
+    Neither pass is allowed to call an account gone on its own absence of
+    evidence: ig_helper reports "active" or "unverified" and never claims a
+    profile is missing, so only the anonymous probe's positive 404/deactivated
+    markers produce GONE. Everything unresolved stays UNVERIFIED, which is the
+    shortlist a human should eyeball — not a list to flag blindly.
     """
     if not usernames:
         return {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(usernames))) as pool:
-        verdicts = dict(zip(usernames, pool.map(lambda u: looks_disabled(u, timeout), usernames)))
+    verdicts: dict[str, str] = {}
+    candidates = list(usernames)
 
-    suspects = sorted(u for u, v in verdicts.items() if v is True)
-    if suspects and ig_authenticated():
-        statuses = _authenticated_statuses(suspects)
-        for username, status in (statuses or {}).items():
-            if status is False:          # logged-in Instagram sees a live profile
-                verdicts[username] = False
+    if ig_authenticated():
+        raw = _authenticated_raw_statuses(usernames, progress=progress)
+        if raw:
+            for username in usernames:
+                if raw.get(username) == "active":
+                    verdicts[username] = ACTIVE
+            candidates = [u for u in usernames if u not in verdicts]
+            print(f"  [{label or 'scan'}] saved login cleared "
+                  f"{len(verdicts)}/{len(usernames)}; {len(candidates)} to confirm", flush=True)
+
+    if candidates:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(candidates))) as pool:
+            probes = dict(zip(candidates, pool.map(lambda u: looks_disabled(u, timeout), candidates)))
+        for username, probe in probes.items():
+            verdicts[username] = {True: GONE, False: ACTIVE}.get(probe, UNVERIFIED)
+        if progress:
+            progress(len(usernames), len(usernames))
+
     if label:
-        gone = sum(1 for v in verdicts.values() if v is True)
-        unclear = sum(1 for v in verdicts.values() if v is None)
-        print(f"  [{label}] {len(usernames)} checked, {gone} gone, {unclear} unclear", flush=True)
+        tally = {v: sum(1 for x in verdicts.values() if x == v) for v in (GONE, ACTIVE, UNVERIFIED)}
+        print(f"  [{label}] {len(usernames)} checked, {tally[GONE]} gone, "
+              f"{tally[ACTIVE]} active, {tally[UNVERIFIED]} unverified", flush=True)
     return verdicts
 
 
@@ -1137,7 +1200,8 @@ def _reconcile_side(counts: dict, live: dict | None, side: str) -> dict:
 
 
 def audit_counts(*, check_network: bool = False, scope: str = "both",
-                 timeout: float = 8.0, fetch_live: bool = False) -> dict:
+                 timeout: float = 8.0, fetch_live: bool = False,
+                 progress=None) -> dict:
     """Explain, number by number, how the headline counts were reached.
 
     Instagram's profile page hides accounts it no longer serves — deactivated,
@@ -1194,17 +1258,76 @@ def audit_counts(*, check_network: bool = False, scope: str = "both",
 
     usernames = sorted(handles)
     print(f"scanning {len(usernames)} handle(s) in scope '{scope}' against instagram.com...", flush=True)
-    verdicts = scan_handles_for_disabled(usernames, timeout=timeout, label=scope)
-    gone = [handles[u] for u, v in verdicts.items() if v is True]
+    verdicts = scan_handles_for_disabled(usernames, timeout=timeout, label=scope,
+                                         progress=progress)
     audit["scan"] = {
         "scope": scope,
         "checked": len(usernames),
-        "gone": by_ts_desc(gone),
-        "unclear": sorted(u for u, v in verdicts.items() if v is None),
-        "live_profiles": sum(1 for v in verdicts.values() if v is False),
+        # Confirmed gone: safe to flag.
+        "gone": by_ts_desc([handles[u] for u, v in verdicts.items() if v == GONE]),
+        # Could not be established either way — the shortlist to eyeball. This
+        # is where a missing account hides when Instagram will not answer.
+        "unverified": by_ts_desc([handles[u] for u, v in verdicts.items() if v == UNVERIFIED]),
+        "live_profiles": sum(1 for v in verdicts.values() if v == ACTIVE),
         "authenticated": ig_authenticated(),
     }
     return audit
+
+
+# ---------- background scan job ----------
+
+# The http server is single-threaded, so a scan that walks a whole following
+# list through a headless browser would hold the socket for minutes and freeze
+# the page it was launched from. The scan runs on its own thread instead and
+# the UI polls /scan-status.
+_SCAN_LOCK = threading.Lock()
+_SCAN_JOB: dict = {"state": "idle", "checked": 0, "total": 0,
+                   "audit": None, "error": None, "profile_id": None}
+
+
+def scan_job_snapshot() -> dict:
+    with _SCAN_LOCK:
+        return dict(_SCAN_JOB)
+
+
+def start_scan_job(*, scope: str = "both") -> dict:
+    """Kick off a background count-audit scan. Returns the job state.
+
+    Refuses to start a second scan while one is running — the work is bounded
+    by Instagram's patience, not ours, and two concurrent sweeps would just
+    get each other rate-limited.
+    """
+    if scope not in AUDIT_SCOPES:
+        raise ValueError(f"scope must be one of {', '.join(AUDIT_SCOPES)}")
+    with _SCAN_LOCK:
+        if _SCAN_JOB["state"] == "running":
+            return dict(_SCAN_JOB)
+        _SCAN_JOB.update({"state": "running", "checked": 0, "total": 0,
+                          "audit": None, "error": None,
+                          "profile_id": _profiles_payload()["active_profile_id"]})
+        started = dict(_SCAN_JOB)
+
+    def progress(checked: int, total: int) -> None:
+        with _SCAN_LOCK:
+            _SCAN_JOB["checked"], _SCAN_JOB["total"] = checked, total
+
+    def work() -> None:
+        try:
+            audit = audit_counts(check_network=True, scope=scope, progress=progress)
+        except (OSError, ValueError, FileNotFoundError) as e:
+            with _SCAN_LOCK:
+                _SCAN_JOB.update({"state": "error", "error": str(e)})
+            return
+        with _SCAN_LOCK:
+            # Switching accounts mid-scan invalidates the result -- it was
+            # computed against the previous profile's export.
+            if _SCAN_JOB["profile_id"] != _profiles_payload()["active_profile_id"]:
+                _SCAN_JOB.update({"state": "idle", "audit": None})
+                return
+            _SCAN_JOB.update({"state": "done", "audit": audit})
+
+    threading.Thread(target=work, name="count-audit-scan", daemon=True).start()
+    return started
 
 
 def _print_side(label: str, side: dict) -> None:
@@ -1245,13 +1368,19 @@ def cmd_audit(args: argparse.Namespace) -> None:
         print("\nRe-run with --check-network to find the specific accounts behind a gap.")
         return
 
-    print(f"\nchecked {scan['checked']} handle(s); "
-          f"{len(scan['gone'])} look gone, {len(scan['unclear'])} unclear.")
+    print(f"\nchecked {scan['checked']} handle(s); {len(scan['gone'])} confirmed gone, "
+          f"{scan['live_profiles']} confirmed active, {len(scan['unverified'])} unverified.")
     if not scan["authenticated"]:
-        print("(no saved Instagram login — anonymous probes get rate-limited, so "
-              "'unclear' can be large. Log in from the app for a cleaner pass.)")
+        print("(no saved Instagram login — Instagram login-walls anonymous profile\n"
+              " views, so 'unverified' can swallow the whole list. Log in from the\n"
+              " app and re-run; that pass sees private and walled profiles too.)")
     for record in scan["gone"]:
-        print(f"  [gone] @{record['username']}")
+        print(f"  [gone]       @{record['username']}")
+    for record in scan["unverified"]:
+        print(f"  [unverified] @{record['username']}")
+    if scan["unverified"]:
+        print(f"\n{len(scan['unverified'])} handle(s) could not be established either way — "
+              f"open them in a browser to settle it. --flag-gone never touches these.")
     if scan["gone"] and args.flag_gone:
         for record in scan["gone"]:
             add_flagged(record["username"])
@@ -1263,6 +1392,12 @@ def cmd_audit(args: argparse.Namespace) -> None:
 
 
 # ---------- http server (static files only) ----------
+
+
+def _scan_status_payload(job: dict) -> dict:
+    """Trim the internal job record down to what the UI needs."""
+    return {"state": job["state"], "checked": job["checked"], "total": job["total"],
+            "audit": job["audit"], "error": job["error"]}
 
 
 class FlagHandler(http.server.SimpleHTTPRequestHandler):
@@ -1335,6 +1470,11 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             if self._reject_without_profile():
                 return
             self._handle_count_audit(check_network=False)
+            return
+        if self.path == "/scan-status":
+            if self._reject_without_profile():
+                return
+            self._send_json(200, {"ok": True, **_scan_status_payload(scan_job_snapshot())})
             return
         if self.path == "/ig-status":
             self._send_json(200, {"ok": True, "state": instagram_login_state()})
@@ -1462,18 +1602,19 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_count_audit(self, *, check_network: bool) -> None:
         """GET /count-audit  — instant arithmetic behind the headline numbers.
-        POST /count-audit — same, plus a network sweep naming the handles whose
-                            Instagram pages are gone. Optional JSON body:
-                            {"scope": "following"|"followers"|"both",
-                             "flag_gone": bool}.
+        POST /count-audit — start the background network sweep that names the
+                            handles Instagram no longer serves. Optional JSON
+                            body: {"scope": "following"|"followers"|"both"}.
+                            Returns immediately; poll GET /scan-status.
 
-        ponytail: the POST can run for a minute on a large export and the
-        server is single-threaded, so the UI disables itself for the duration
-        exactly like /recheck-disabled does. Auto-flagging is opt-in via
-        flag_gone — a rate-limited anonymous sweep should never mass-flag
-        somebody's following list behind their back.
+        ponytail: the sweep walks a whole following list through a headless
+        browser, which is minutes of work, and this server is single-threaded.
+        Running it inline would hold the socket and freeze the very page that
+        launched it, so POST only starts the job. Nothing is auto-flagged: the
+        scan reports, the user decides, because "Instagram wouldn't answer" is
+        not evidence an account is gone.
         """
-        scope, flag_gone = "both", False
+        scope = "both"
         if check_network:
             try:
                 length = int(self.headers.get("Content-Length") or "0")
@@ -1490,9 +1631,17 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_error(400, "bad json body")
                     return
                 scope = str(body.get("scope", scope)).strip().lower() or scope
-                flag_gone = body.get("flag_gone") is True
+            # Hand the sweep to the background thread and answer immediately;
+            # the UI polls /scan-status for progress and the finished audit.
+            try:
+                job = start_scan_job(scope=scope)
+            except ValueError as e:
+                self.send_error(400, str(e))
+                return
+            self._send_json(200, {"ok": True, **_scan_status_payload(job)})
+            return
         try:
-            audit = audit_counts(check_network=check_network, scope=scope)
+            audit = audit_counts(check_network=False, scope=scope)
         except ValueError as e:
             self.send_error(400, str(e))
             return
@@ -1502,19 +1651,7 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         except OSError as e:
             self.send_error(500, f"count audit failed: {e}")
             return
-
-        flagged_now: list[str] = []
-        if flag_gone and audit.get("scan"):
-            try:
-                for record in audit["scan"]["gone"]:
-                    add_flagged(record["username"])
-                    flagged_now.append(record["username"])
-                if flagged_now:
-                    _refresh_active_report()
-            except OSError as e:
-                self.send_error(500, f"could not flag accounts: {e}")
-                return
-        self._send_json(200, {"ok": True, "audit": audit, "flagged": flagged_now})
+        self._send_json(200, {"ok": True, "audit": audit, "flagged": []})
 
     def _handle_list_snapshots(self) -> None:
         """GET /snapshots -- return every dated folder on disk as JSON.

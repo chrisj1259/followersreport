@@ -944,6 +944,8 @@
       <p class="explainer" id="reconcile-files" hidden></p>
       <p class="explainer" id="reconcile-scan-note" hidden></p>
       <ul class="list" id="reconcile-list" hidden></ul>
+      <p class="explainer" id="reconcile-unverified-note" hidden></p>
+      <ul class="list" id="reconcile-unverified-list" hidden></ul>
     </div>
   </section>
 
@@ -1105,6 +1107,7 @@ const state = {
   data: null,
   liveCounts: null,
   audit: null,
+  scan_running: false,
   // ponytail: kept OUT of state.audit so a report reload (e.g. after flagging
   // one of the accounts the scan surfaced) repaints the ledger without
   // throwing away the scan the user just waited a minute for.
@@ -1461,32 +1464,46 @@ function renderReconcile() {
 function renderScanResults() {
   const note = $("reconcile-scan-note");
   const list = $("reconcile-list");
+  const unNote = $("reconcile-unverified-note");
+  const unList = $("reconcile-unverified-list");
   const scan = state.scan;
   list.innerHTML = "";
+  unList.innerHTML = "";
   if (!scan) {
-    note.hidden = true;
-    list.hidden = true;
+    for (const el of [note, list, unNote, unList]) el.hidden = true;
     return;
   }
+  const flaggedNow = new Set(((latestSnapshot() || {}).disabled_accounts || []).map((r) => r.username));
+  const fill = (target, records) => {
+    for (const r of records) {
+      target.appendChild(row(r, { flagButton: flaggedNow.has(r.username) ? "remove" : true }));
+    }
+  };
+
   note.hidden = false;
   const bits = [`Checked ${scan.checked.toLocaleString()} account${scan.checked === 1 ? "" : "s"}: `
-    + `<b>${scan.gone.length}</b> no longer ${scan.gone.length === 1 ? "has" : "have"} a live Instagram page`
-    + `, ${scan.unclear.length} Instagram wouldn't answer for.`];
+    + `<b>${scan.gone.length}</b> confirmed gone, ${scan.live_profiles.toLocaleString()} confirmed active, `
+    + `${scan.unverified.length} Instagram wouldn't answer for.`];
   if (!scan.authenticated) {
-    bits.push("Anonymous checks get rate-limited quickly — logging into Instagram makes this pass far more decisive.");
+    bits.push("Instagram login-walls anonymous profile views, so <em>unverified</em> can swallow the whole list. "
+      + "Log into Instagram (button in the flagged panel) and run this again — that pass sees private and walled profiles too.");
   }
   if (scan.gone.length) {
-    bits.push("Flag these to take them out of your active counts. A handle can also read as gone because the person <em>renamed</em>, so glance at the list before flagging.");
+    bits.push("Flag the confirmed ones to take them out of your active counts. A handle can also read as gone because the person <em>renamed</em>, so glance at the list first.");
   }
   note.innerHTML = bits.join(" ");
-  const flaggedNow = new Set(((latestSnapshot() || {}).disabled_accounts || []).map((r) => r.username));
-  if (!scan.gone.length) {
-    list.hidden = true;
-    return;
-  }
-  list.hidden = false;
-  for (const r of scan.gone) {
-    list.appendChild(row(r, { flagButton: flaggedNow.has(r.username) ? "remove" : true }));
+  list.hidden = !scan.gone.length;
+  fill(list, scan.gone);
+
+  // The shortlist: neither pass could establish these either way. If a count
+  // is still off after flagging the confirmed ones, the answer is in here.
+  unNote.hidden = !scan.unverified.length;
+  unList.hidden = !scan.unverified.length;
+  if (scan.unverified.length) {
+    unNote.innerHTML = `<strong>Couldn't be established either way (${scan.unverified.length}):</strong> `
+      + "Instagram returned neither a live profile nor a missing-page marker. Open each one — if it loads normally it's fine, "
+      + "if it says the page isn't available, flag it. These are never flagged automatically.";
+    fill(unList, scan.unverified);
   }
 }
 
@@ -1503,14 +1520,18 @@ async function loadReconcile() {
   renderReconcile();
 }
 
+// ponytail: the sweep is minutes of work on the server's own thread, so the
+// POST only starts it and this polls for progress. The page stays usable
+// throughout — the earlier blocking version would have frozen it outright on
+// a following list of any real size.
 async function scanForGoneAccounts() {
   const btn = $("reconcile-scan");
-  if (btn.disabled || state.profile.busy) return;
-  setProfileBusy(true);
+  if (btn.disabled || state.scan_running) return;
+  state.scan_running = true;
   btn.disabled = true;
   const original = btn.textContent;
   btn.textContent = "Checking…";
-  setProfileStatus("Checking every account in your export against instagram.com — this can take a minute…");
+  setProfileStatus("Checking your export against instagram.com — this can take several minutes. The page stays usable.");
   try {
     const r = await fetch("/count-audit", {
       method: "POST",
@@ -1519,20 +1540,39 @@ async function scanForGoneAccounts() {
     });
     const text = await r.text();
     if (!r.ok) throw new Error((JSON.parse(text).error) || text || `HTTP ${r.status}`);
-    const result = JSON.parse(text);
-    state.audit = result.audit || null;
-    state.scan = (result.audit && result.audit.scan) || null;
-    renderReconcile();
-    const gone = state.scan ? state.scan.gone.length : 0;
-    setProfileStatus(gone
-      ? `Found ${gone} account${gone === 1 ? "" : "s"} with no live Instagram page.`
-      : "Every account in your export still has a live Instagram page.");
+
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const sr = await fetch("/scan-status", { cache: "no-store" });
+      if (!sr.ok) throw new Error(`HTTP ${sr.status}`);
+      const status = await sr.json();
+      if (status.state === "running") {
+        btn.textContent = status.total
+          ? `Checking ${status.checked}/${status.total}…`
+          : "Checking…";
+        continue;
+      }
+      if (status.state === "error") throw new Error(status.error || "scan failed");
+      if (status.state === "done" && status.audit) {
+        state.audit = status.audit;
+        state.scan = status.audit.scan || null;
+        renderReconcile();
+        const gone = state.scan ? state.scan.gone.length : 0;
+        const unverified = state.scan ? state.scan.unverified.length : 0;
+        setProfileStatus(gone
+          ? `Found ${gone} account${gone === 1 ? "" : "s"} with no live Instagram page.`
+          : (unverified
+              ? `No account could be confirmed gone; ${unverified} couldn't be established either way.`
+              : "Every account in your export still has a live Instagram page."));
+      }
+      break;
+    }
   } catch (e) {
     setProfileStatus(`Account check failed: ${e.message}`, true);
   } finally {
     btn.textContent = original;
     btn.disabled = false;
-    setProfileBusy(false);
+    state.scan_running = false;
   }
 }
 

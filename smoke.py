@@ -571,12 +571,44 @@ try:
     scan = audit["scan"]
     assert scan["scope"] == "following" and scan["checked"] == 3, scan
     assert [r["username"] for r in scan["gone"]] == ["f0"], scan["gone"]
-    assert scan["unclear"] == ["f1"], scan["unclear"]
+    # "Instagram wouldn't answer" is reported as its own bucket, never folded
+    # into "gone" -- that distinction is the whole point of the scan.
+    assert [r["username"] for r in scan["unverified"]] == ["f1"], scan["unverified"]
     assert scan["live_profiles"] == 1, scan["live_profiles"]
     assert run._read_flagged() == set(), "audit must not flag anything on its own"
 
     # Scope narrows the sweep; "both" also covers followers-only handles.
     assert run.audit_counts(check_network=True, scope="both")["scan"]["checked"] == 5
+
+    # With a saved login the authenticated pass runs FIRST and clears whatever
+    # it can see, so only what it could not resolve reaches the anonymous
+    # probe. Instagram login-walls anonymous views, so leading with the probe
+    # is what makes a scan come back empty-handed.
+    probed = []
+    run.looks_disabled = lambda u, timeout=8.0: (
+        probed.append(u), {"f0": True}.get(u))[1]   # f1 -> None: walled/unclear
+    real_auth, real_raw = run.ig_authenticated, run._authenticated_raw_statuses
+    run.ig_authenticated = lambda: True
+    run._authenticated_raw_statuses = lambda users, progress=None: {
+        u: ("unverified" if u in ("f0", "f1") else "active") for u in users}
+    try:
+        scan = run.audit_counts(check_network=True, scope="following")["scan"]
+        assert sorted(probed) == ["f0", "f1"], probed
+        assert [r["username"] for r in scan["gone"]] == ["f0"], scan["gone"]
+        assert [r["username"] for r in scan["unverified"]] == ["f1"], scan["unverified"]
+        assert scan["live_profiles"] == 1 and scan["authenticated"] is True, scan
+    finally:
+        run.ig_authenticated, run._authenticated_raw_statuses = real_auth, real_raw
+
+    # A dead authenticated session must not turn the whole list into "gone".
+    run._authenticated_raw_statuses = lambda users, progress=None: None
+    run.ig_authenticated = lambda: True
+    run.looks_disabled = lambda u, timeout=8.0: None
+    try:
+        scan = run.audit_counts(check_network=True, scope="following")["scan"]
+        assert scan["gone"] == [] and len(scan["unverified"]) == 3, scan
+    finally:
+        run.ig_authenticated, run._authenticated_raw_statuses = real_auth, real_raw
 finally:
     run.looks_disabled = real_looks_disabled
 print("T12 count audit OK: records -> unique -> after-flags -> live gap -> gone accounts")
