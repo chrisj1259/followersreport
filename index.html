@@ -1311,13 +1311,45 @@ function renderStats(s) {
   const stats = $("stats");
   const c = s.counts;
   stats.innerHTML = "";
-  const liveValue = (key) => Number.isInteger(state.liveCounts?.[key]) ? state.liveCounts[key] : c[key];
+  // ponytail: the subtitle carries the WHOLE trail -- export -> active after
+  // flags -> live -- because every step it drops is a step the user has to
+  // guess at. v1.1.2 showed "N active after flags"; v1.2.0 replaced that with
+  // a live-counts-only label, so with no saved Instagram login the card fell
+  // all the way back to a bare "records in this export". That is what makes
+  // flagging an account feel like it did nothing: the headline is the raw
+  // export total by design, so if the subtitle doesn't move either, nothing
+  // on screen acknowledges the flag. Flags are also subtracted BEFORE the
+  // live comparison here -- an account you already flagged is explained, not
+  // part of the unexplained remainder.
+  const liveOf = (key) => Number.isInteger(state.liveCounts?.[key]) ? state.liveCounts[key] : null;
+  const activeOf = (key) => {
+    const active = c[key === "followers" ? "active_followers" : "active_following"];
+    return Number.isInteger(active) ? active : c[key];
+  };
+  const liveValue = (key) => {
+    const live = liveOf(key);
+    return live === null ? c[key] : live;
+  };
   const liveLabel = (key) => {
-    if (!Number.isInteger(state.liveCounts?.[key])) return "records in this export";
-    const difference = c[key] - state.liveCounts[key];
-    return difference > 0
-      ? `${c[key].toLocaleString()} in export · ${difference.toLocaleString()} unavailable/stale`
-      : `${c[key].toLocaleString()} in downloaded export`;
+    const exported = c[key];
+    const active = activeOf(key);
+    const flagged = exported - active;
+    const live = liveOf(key);
+    // Kept terse: the card is a glance, the "Doesn't match Instagram?" panel
+    // directly beneath it spells the same trail out in full.
+    const parts = [`${exported.toLocaleString()} in export`];
+    if (flagged > 0) {
+      parts.push(`${active.toLocaleString()} after ${flagged.toLocaleString()} flag${flagged === 1 ? "" : "s"}`);
+    }
+    if (live === null) {
+      // No saved Instagram login, so there is no live number to compare against.
+      return flagged > 0 ? parts.join(" \u00b7 ") : "records in this export";
+    }
+    const unexplained = active - live;
+    if (unexplained > 0) parts.push(`${unexplained.toLocaleString()} unexplained`);
+    else if (unexplained < 0) parts.push(`${(-unexplained).toLocaleString()} behind Instagram`);
+    else parts.push("matches Instagram");
+    return parts.join(" \u00b7 ");
   };
   const items = [
     ["Followers",            liveValue("followers"), liveLabel("followers")],
@@ -1438,7 +1470,7 @@ function renderScanResults() {
   }
   note.hidden = false;
   const bits = [`Checked ${scan.checked.toLocaleString()} account${scan.checked === 1 ? "" : "s"}: `
-    + `<b>${scan.gone.length}</b> no longer have a live Instagram page`
+    + `<b>${scan.gone.length}</b> no longer ${scan.gone.length === 1 ? "has" : "have"} a live Instagram page`
     + `, ${scan.unclear.length} Instagram wouldn't answer for.`];
   if (!scan.authenticated) {
     bits.push("Anonymous checks get rate-limited quickly — logging into Instagram makes this pass far more decisive.");

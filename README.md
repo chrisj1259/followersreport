@@ -181,7 +181,9 @@ Hover any row in **People I don't follow back** or **People who don't follow me 
 
 The button beside the disabled-account heading reads **Log into Instagram** until you've authenticated, then **Recheck statuses**. Logging in opens a real, visible Chrome window (Chrome must already be installed) pointed at Instagram; log in by hand and the app detects it and closes the window itself — no password ever passes through this app. That session is saved to `ig-session/` (CLI) or `%APPDATA%\InstagramFollowerReport\ig-session\` (installed app) and reused headlessly from then on, so you only do this once. **Recheck statuses** then walks the whole saved disabled-account list through that session; if Instagram positively returns a matching profile and user ID, the app removes its flag. Timeouts, rate limits, login walls, and other unclear responses leave the flag unchanged.
 
-The Followers and Following cards make one authenticated profile check per account per app session and show Instagram's live totals when available, once you're logged in. The downloaded-export total remains underneath so unavailable or stale export records are visible. If you haven't logged in, or the check fails, the cards safely fall back to the export totals.
+The Followers and Following cards make one authenticated profile check per account per app session and show Instagram's live totals when available, once you're logged in. If you haven't logged in, or the check fails, the cards fall back to the export totals.
+
+The card subtitle always shows the full trail, so every step is visible whether or not you're logged in: `103 in export · 101 after 2 flags · 1 unexplained`. Flags are subtracted *before* the comparison with Instagram — an account you've already flagged counts as explained, not as part of the remainder. That last number is what **Find the difference** hunts down.
 
 ### Network-side disabled-account detection
 
