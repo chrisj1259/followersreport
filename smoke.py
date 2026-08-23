@@ -400,6 +400,75 @@ try:
     assert beta_report["snapshots"][0]["not_followed_back"][0]["username"] == "beta_follower"
     assert json.loads((desktop / "profiles" / beta_id / "disabledaccounts.json").read_text()) == ["beta_disabled"]
     assert (desktop / "profiles" / beta_id / "data" / date_str).is_dir()
+
+    # Weekly saved-flag recheck: one live relationship-list fetch, background
+    # completion, per-profile schedule, and no removal for absent/unclear names.
+    session_dir = desktop / "ig-session"
+    session_dir.mkdir(exist_ok=True)
+    (session_dir / run.IG_SESSION_MARKER).touch()
+    real_relationships = run._authenticated_relationships
+    relationship_calls = []
+    try:
+        run._authenticated_relationships = lambda username: (
+            relationship_calls.append(username) or
+            {"followers": {}, "following": {"beta_disabled": "9001"}}
+        )
+        started = request_json(profile_port, "/recheck-disabled", {})
+        assert started["state"] == "running" and started["checked"] == 1, started
+        for _ in range(100):
+            recheck = request_json(profile_port, "/recheck-status")
+            if recheck["state"] != "running":
+                break
+            time.sleep(0.01)
+        assert recheck["state"] == "done" and recheck["reenabled"] == ["beta_disabled"], recheck
+        beta_flags = desktop / "profiles" / beta_id / "disabledaccounts.json"
+        schedule = beta_flags.with_name("disabled-recheck.json")
+        assert json.loads(beta_flags.read_text()) == []
+        schedule_data = json.loads(schedule.read_text())
+        assert schedule_data["next_due"] > time.time() + 6 * 24 * 60 * 60, schedule_data
+
+        request_json(profile_port, "/flag", {"username": "beta_waiting", "action": "add"})
+        not_due = request_json(profile_port, "/live-counts")
+        assert "recheck" not in not_due and json.loads(beta_flags.read_text()) == ["beta_waiting"], not_due
+
+        schedule.unlink()  # force the automatic path due inside this disposable sandbox
+        run._authenticated_relationships = lambda username: (
+            relationship_calls.append(username) or {"followers": {}, "following": {}}
+        )
+        auto = request_json(profile_port, "/live-counts")
+        assert auto["recheck"]["state"] == "running" and auto["recheck"]["automatic"] is True, auto
+        for _ in range(100):
+            recheck = request_json(profile_port, "/recheck-status")
+            if recheck["state"] != "running":
+                break
+            time.sleep(0.01)
+        assert recheck["state"] == "done" and recheck["reenabled"] == [], recheck
+        assert json.loads(beta_flags.read_text()) == ["beta_waiting"]
+        assert relationship_calls == ["beta_two", "beta_two"], relationship_calls
+
+        # A flagged account that merely CHANGED ITS USERNAME must come back.
+        # Its old handle is absent from every live list forever, so without the
+        # identity ledger it stays buried in the disabled panel under a name
+        # nobody uses -- flagged for a disappearance that never happened.
+        request_json(profile_port, "/flag", {"username": "beta_old", "action": "add"})
+        run.record_live_identities({"followers": {"beta_old": "4242"}, "following": {}})
+        run._authenticated_relationships = lambda username: {
+            "followers": {"beta_new": "4242"}, "following": {},
+        }
+        renamed_run = request_json(profile_port, "/recheck-disabled", {})
+        assert renamed_run["state"] == "running", renamed_run
+        for _ in range(100):
+            recheck = request_json(profile_port, "/recheck-status")
+            if recheck["state"] != "running":
+                break
+            time.sleep(0.01)
+        assert recheck["state"] == "done" and recheck["reenabled"] == ["beta_old"], recheck
+        assert json.loads(beta_flags.read_text()) == ["beta_waiting"], beta_flags.read_text()
+        assert run.known_renames() == {"beta_old": "beta_new"}, run.known_renames()
+    finally:
+        run._authenticated_relationships = real_relationships
+    print("T8b periodic flag recheck OK: live relationships restore; renamed handles unflag; absent handles stay flagged; weekly schedule skips")
+
     run.enable_profile_mode(desktop, desktop / "dist")
     persisted = request_json(profile_port, "/profiles")
     assert persisted["active_profile_id"] == beta_id, persisted
@@ -561,6 +630,18 @@ assert audit["followers"]["gap"] == 0, audit["followers"]   # 4 active vs 4 live
 # Without a warmed cache the audit reports "unknown" instead of blocking.
 assert run.audit_counts()["live_available"] is False
 run.unflag("f2")
+
+# One authenticated relationship-list comparison names the gap directly. It
+# only returns candidates; the user's saved flag file remains untouched.
+relationship_audit = run.audit_counts(
+    scope="following",
+    relationships={"followers": {}, "following": {"f2": "102"}},
+)
+relationship_scan = relationship_audit["scan"]
+assert relationship_scan["method"] == "relationships", relationship_scan
+assert sorted(r["username"] for r in relationship_scan["following_candidates"]) == ["f0", "f1"], relationship_scan
+assert relationship_scan["live_profiles"] == 1 and run._read_flagged() == set(), relationship_scan
+
 # The network sweep itself, with instagram.com stubbed out: it must name the
 # handles whose page is gone, leave "unclear" ones alone, and only flag when
 # explicitly asked to.
@@ -612,6 +693,195 @@ try:
 finally:
     run.looks_disabled = real_looks_disabled
 print("T12 count audit OK: records -> unique -> after-flags -> live gap -> gone accounts")
+
+# --- T13 identity ledger: renames proved by Instagram user id ---------------
+# The export carries usernames and nothing else, so a rename is invisible to
+# it. Instagram's live list carries the numeric id, which never changes.
+run._atomic_json(run._identity_path(), {"ids": {}, "renames": {}})
+first = run.record_live_identities({
+    "followers": {"stays": "1", "old_handle": "2"},
+    "following": {"partner": "3"},
+})
+assert first == {}, first                       # first sighting proves nothing
+assert run.known_renames() == {}, run.known_renames()
+
+second = run.record_live_identities({
+    "followers": {"stays": "1", "new_handle": "2"},
+    "following": {"partner": "3"},
+})
+assert second == {"old_handle": "new_handle"}, second
+assert run.known_renames() == {"old_handle": "new_handle"}, run.known_renames()
+
+# Rename again: the chain resolves all the way to the handle in use today.
+run.record_live_identities({"followers": {"stays": "1", "newest": "2"}, "following": {}})
+assert run.known_renames() == {"old_handle": "newest", "new_handle": "newest"}, run.known_renames()
+
+# A handle that is live again is somebody's current handle, so the rename
+# recorded away from it is stale -- otherwise it would silently rewrite an
+# unrelated person's row forever.
+run.record_live_identities({"followers": {"new_handle": "77"}, "following": {}})
+assert "new_handle" not in run.known_renames(), run.known_renames()
+run._identity_path().unlink()
+print("T13 identity ledger OK: id-proved renames, chains resolved, stale entries dropped")
+
+# --- T14 reconciliation reports BOTH directions -----------------------------
+# "in the export but not on Instagram" is only half the gap. The other half --
+# accounts Instagram lists that the export has no row for -- is where a
+# rename's new handle and every post-export follow lands, and without it the
+# arithmetic can never close.
+run._atomic_json(run._identity_path(), {"ids": {}, "renames": {}})
+run.record_live_identities({"followers": {}, "following": {"f1": "501"}})
+run.record_live_identities({"followers": {}, "following": {"f1_renamed": "501"}})
+two_way = run.audit_counts(scope="following", relationships={
+    "followers": {},
+    "following": {"f1_renamed": "501", "someone_new": "999"},
+})["scan"]
+# f1 renamed to f1_renamed: proved by id, so NOT a missing account.
+assert two_way["renamed"] == {"f1": "f1_renamed"}, two_way["renamed"]
+assert [r["username"] for r in two_way["following_renamed"]] == ["f1"], two_way
+assert two_way["following_renamed"][0]["renamed_to"] == "f1_renamed", two_way
+# f0/f2 really are absent from Instagram's list.
+assert sorted(r["username"] for r in two_way["following_candidates"]) == ["f0", "f2"], two_way
+# someone_new is on Instagram but not in the export -- a stale export.
+assert two_way["following_extra"] == ["someone_new"], two_way
+assert two_way["following_listed"] == 2, two_way
+run._identity_path().unlink()
+print("T14 two-way reconciliation OK: renamed / missing / not-in-export kept apart")
+
+# --- T14b a live account is never offered as a "disabled" candidate ---------
+# Missing from Instagram's relationship list has two causes with opposite
+# answers: the ACCOUNT is gone (flag it), or the RELATIONSHIP is gone -- you
+# unfollowed them after the export was generated -- and the account is
+# perfectly alive (flagging it is simply wrong). One authenticated profile
+# fetch separates them; without the split, live accounts get filed into the
+# disabled panel and stay there.
+run._atomic_json(run._identity_path(), {"ids": {}, "renames": {}})
+real_auth, real_raw = run.ig_authenticated, run._authenticated_raw_statuses
+run.ig_authenticated = lambda: True
+# f0 still has a live profile (you just unfollowed them); f2's profile is gone.
+run._authenticated_raw_statuses = lambda users, progress=None: {
+    u: ("active" if u == "f0" else "unverified") for u in users}
+try:
+    split = run.audit_counts(scope="following", verify_missing=True, relationships={
+        "followers": {}, "following": {"f1": "501"},
+    })["scan"]
+finally:
+    run.ig_authenticated, run._authenticated_raw_statuses = real_auth, real_raw
+assert split["verified"] is True, split
+assert [r["username"] for r in split["departed"]] == ["f0"], split["departed"]
+assert [r["username"] for r in split["following_departed"]] == ["f0"], split
+assert [r["username"] for r in split["candidates"]] == ["f2"], split["candidates"]
+assert [r["username"] for r in split["following_candidates"]] == ["f2"], split
+assert split["verify_truncated"] is False, split
+
+# With no way to verify, nothing is quietly promoted to "gone" -- every
+# missing handle stays a candidate and the payload says it was unverified,
+# so the UI can warn instead of pretending certainty.
+unverified_split = run.audit_counts(scope="following", verify_missing=True, relationships={
+    "followers": {}, "following": {"f1": "501"},
+})["scan"]
+assert unverified_split["verified"] is False, unverified_split
+assert sorted(r["username"] for r in unverified_split["candidates"]) == ["f0", "f2"], unverified_split
+assert unverified_split["departed"] == [], unverified_split
+run._identity_path().unlink()
+print("T14b live-account guard OK: alive -> 'no longer connected', gone -> flag candidate")
+
+# --- T14c the relationship walk is cached, and publishes its counts ---------
+# One walk is a Chrome launch plus a request per ~23 accounts. Clicking the
+# button twice used to pay for it twice to get an answer that cannot have
+# changed. The profile totals ride along on the same fetch, so the stat cards
+# no longer need a Chrome launch of their own.
+run.invalidate_relationships_cache()
+run.LIVE_PROFILE_COUNTS.clear()
+calls = []
+real_scrapling, real_auth = run._scrapling_result, run.ig_authenticated
+run.ig_authenticated = lambda: True
+run._scrapling_result = lambda mode, args, timeout: (
+    calls.append(mode) or {"followers": {"a": "1"}, "following": {"b": "2"},
+                           "self_pk": "9", "counts": {"followers": 5, "following": 7}})
+try:
+    first = run._authenticated_relationships("me")
+    second = run._authenticated_relationships("me")
+    assert first == second == {"followers": {"a": "1"}, "following": {"b": "2"}}, first
+    assert calls == ["relationships"], f"second call must come from cache, got {calls}"
+    # Switching accounts must drop it -- a cached list belongs to one account.
+    run.invalidate_relationships_cache()
+    run._authenticated_relationships("me")
+    assert calls == ["relationships", "relationships"], calls
+finally:
+    run._scrapling_result, run.ig_authenticated = real_scrapling, real_auth
+    run.invalidate_relationships_cache()
+print("T14c relationship cache OK: repeat walk served from cache, counts published free")
+
+# --- T15 multi-part exports are staged whole --------------------------------
+# Instagram splits a big export across followers_1.json, followers_2.json, ...
+# Staging one file per bucket silently dropped everyone past the first part,
+# which is the single largest source of "this doesn't match Instagram".
+multi = sb / "multipart-export"
+multi.mkdir()
+(multi / "followers_1.json").write_text(json.dumps(
+    {"relationships_followers": [ig("part1_a"), ig("part1_b")]}))
+(multi / "followers_2.json").write_text(json.dumps(
+    {"relationships_followers": [ig("part2_a"), ig("part1_b")]}))  # overlap is deduped
+(multi / "following.json").write_text(json.dumps(
+    {"relationships_following": [ig("part1_a")]}))
+(multi / "following_hashtags.json").write_text(json.dumps(
+    {"relationships_following_hashtags": [hashtag_rec("cars")]}))
+n_f, n_g = run._stage_snapshot(multi, "05-05-2026")
+assert (n_f, n_g) == (3, 1), (n_f, n_g)
+staged = sorted(pp.name for pp in (run.DATA / "05-05-2026").glob("*.json"))
+assert staged == ["followers_1.json", "followers_2.json", "following_1.json"], staged
+summary, _, _ = run.read_snapshot(run.DATA / "05-05-2026", set())
+assert summary["counts"]["followers"] == 3, summary["counts"]
+
+# Re-importing a smaller export must not strand the old parts behind, or the
+# report keeps counting people the new export dropped.
+shrunk = sb / "shrunk-export"
+shrunk.mkdir()
+(shrunk / "followers_1.json").write_text(json.dumps(
+    {"relationships_followers": [ig("part1_a")]}))
+(shrunk / "following.json").write_text(json.dumps(
+    {"relationships_following": [ig("part1_a")]}))
+assert run._stage_snapshot(shrunk, "05-05-2026") == (1, 1)
+staged = sorted(pp.name for pp in (run.DATA / "05-05-2026").glob("*.json"))
+assert staged == ["followers_1.json", "following_1.json"], staged
+shutil.rmtree(run.DATA / "05-05-2026")
+print("T15 multi-part export OK: every part staged, deduped, stale parts cleared")
+
+# --- T16 the anonymous probe must not read a login wall as a live profile ---
+wall = ('<html><head><meta property="og:description" content="See photos">'
+        '</head><body><form id="loginForm"><input name="username">'
+        '</form>Log in to Instagram</body></html>')
+
+
+class _FakePage:
+    def __init__(self, body):
+        self.body = body.encode()
+
+    def read(self, _n=None):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+
+real_urlopen = run.urllib.request.urlopen
+try:
+    run.urllib.request.urlopen = lambda *a, **k: _FakePage(wall)
+    assert run.looks_disabled("walled") is None, "login wall must read as unverified"
+    run.urllib.request.urlopen = lambda *a, **k: _FakePage(
+        '<html><head><meta property="og:description" content="1 posts">'
+        '</head><body>photos</body></html>')
+    assert run.looks_disabled("real") is False
+    run.urllib.request.urlopen = lambda *a, **k: _FakePage(
+        "<html><body>Sorry, this page isn't available.</body></html>")
+    assert run.looks_disabled("gone") is True
+finally:
+    run.urllib.request.urlopen = real_urlopen
+print("T16 anonymous probe OK: login wall is unverified, not 'active'")
 
 shutil.rmtree(sb, ignore_errors=True)
 print("SMOKE_TEST_OK")

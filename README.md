@@ -33,7 +33,7 @@ A local-first Windows desktop app (and CLI) that reads your Instagram data expor
 
 1. **Request your Instagram data export** in the Instagram app or web: `Settings → Accounts Center → Your information and permissions → Download your information`. Pick **JSON** format and request the download. Instagram emails you a zip; it usually arrives within minutes to an hour.
 
-2. **Unzip the export.** You get a folder containing `followers_1.json` and `following.json`.
+2. **Unzip the export.** You get a folder containing `followers_1.json` and `following.json`. Large accounts get the followers list split across `followers_1.json`, `followers_2.json`, and so on — every part is imported, so leave them all in the folder.
 
 3. **Stage your first snapshot** from the repo root:
 
@@ -128,7 +128,7 @@ If an older installation already has data, the app asks which Instagram username
 1. Select the Instagram account in the header.
 2. Scroll to the **Add data** panel.
 3. Enter the snapshot date as `MM-DD-YYYY`.
-4. Attach `followers_1.json` and `following.json` from your unzipped Instagram export.
+4. Attach `followers_1.json` and `following.json` from your unzipped Instagram export. If your export split the followers list into `followers_1.json`, `followers_2.json`, … select **all of them** in the followers field — the picker accepts a multi-file selection, and leaving parts out is the most common reason the follower count reads low.
 5. Click **Import snapshot**.
 
 The report refreshes automatically.
@@ -151,12 +151,20 @@ Two things cause a gap, and they have different fixes:
 - **Accounts Instagram no longer counts.** Deactivated, deleted, and banned
   accounts stay in your data export but disappear from the follower/following
   totals on your profile. Downloading a fresh export will not change this; every
-  export contains them. Click **Find the difference** (or run
-  `python run.py audit --check-network`) to check each handle against
-  instagram.com and list the ones with no live profile page, then flag them. A
-  handle can also read as gone because the person *renamed*, so glance at the
-  list before flagging — with two or more snapshots on disk the app detects
-  renames on its own from the follow timestamp.
+  export contains them. After logging in, click **Find the difference** to compare
+  the export with Instagram's paginated live relationship lists and show the
+  candidate usernames directly. The CLI fallback (`python run.py audit
+  --check-network`) checks handles individually. A
+  handle can also read as gone because the person *renamed*. The app separates
+  those out for you — see [Username changes](#username-changes) — and lists them
+  apart from the accounts that are genuinely absent, with no Flag button.
+
+  The comparison runs in both directions. Accounts that are in your export but
+  not on Instagram are the deactivated/deleted/banned ones. Accounts that are on
+  Instagram but not in your export are people you gained (or who renamed) after
+  the export was generated. The ledger states the arithmetic outright:
+  *counted here − absent from Instagram + absent from your export = what
+  Instagram's list returned*.
 
   **Log into Instagram first.** Instagram login-walls anonymous profile views,
   and a walled response looks exactly like a rate-limited one, so without a
@@ -164,7 +172,7 @@ Two things cause a gap, and they have different fixes:
   much. The authenticated pass sees private and walled profiles and does the
   bulk of the clearing.
 
-  Results come back in three buckets: **confirmed gone** (safe to flag),
+  If the live relationship list is unavailable, fallback results come back in three buckets: **confirmed gone** (safe to flag),
   **confirmed active**, and **couldn't be established either way**. Nothing is
   auto-flagged. If your count is still off after flagging the confirmed ones,
   the account you're looking for is in that third list — open each one and see
@@ -187,15 +195,45 @@ python run.py audit --check-network --scope following
 python run.py audit --check-network --flag-gone      # and flag what's confirmed gone
 ```
 
+### Username changes
+
+A data export carries usernames and nothing else. By handle alone, a rename is
+indistinguishable from "they unfollowed me and a stranger followed me" — which
+is why a renamed person otherwise reads as a deleted account, gets flagged, and
+quietly takes your counts out of step permanently.
+
+The app resolves renames two ways and merges the results into one
+**Changed their username** panel:
+
+- **By Instagram account id (certain).** Every live relationship check records
+  each account's numeric Instagram id, which never changes, into
+  `identities.json` next to your flags. Same id under a different username is a
+  rename, full stop. This needs a saved Instagram login and one run of
+  **Find the difference** or the weekly recheck, and it catches renames that
+  happened *after* your most recent export.
+- **By follow timestamp (near-certain).** A rename doesn't break the
+  relationship, so the follow timestamp survives it. A handle that vanished and
+  a handle that appeared sharing an exact timestamp are the same person. This
+  works with no login at all, but needs two or more snapshots on disk, and it
+  declines to guess when the timestamp is ambiguous on either side.
+
+Chains resolve to the handle in use today, so `a` → `b` → `c` shows as
+`a` → `c`. If a released handle gets re-registered by someone else, the stale
+rename is dropped rather than left to rewrite an unrelated person's row. A
+flagged account that turns out to have merely renamed is unflagged
+automatically.
+
 ### Flag suspicious accounts
 
 Hover any row in **People I don't follow back** or **People who don't follow me back** and click **Flag**. The handle moves into the **Likely disabled / deactivated** panel and is excluded from active lists. Click **Unflag** to restore it. Flagged handles are stored in `data/disabledaccounts.json` (CLI) or the active profile's `disabledaccounts.json` (installed app).
 
-The button beside the disabled-account heading reads **Log into Instagram** until you've authenticated, then **Recheck statuses**. Logging in opens a real, visible Chrome window (Chrome must already be installed) pointed at Instagram; log in by hand and the app detects it and closes the window itself — no password ever passes through this app. That session is saved to `ig-session/` (CLI) or `%APPDATA%\InstagramFollowerReport\ig-session\` (installed app) and reused headlessly from then on, so you only do this once. **Recheck statuses** then walks the whole saved disabled-account list through that session; if Instagram positively returns a matching profile and user ID, the app removes its flag. Timeouts, rate limits, login walls, and other unclear responses leave the flag unchanged.
+The button beside the disabled-account heading reads **Log into Instagram** until you've authenticated, then **Recheck statuses**. Logging in opens a real, visible Chrome window (Chrome must already be installed) pointed at Instagram; log in by hand and the app detects it and closes the window itself — no password ever passes through this app. That session is saved to `ig-session/` (CLI) or `%APPDATA%\InstagramFollowerReport\ig-session\` (installed app) and reused headlessly from then on, so you only do this once. **Recheck statuses** starts the saved-account refresh immediately; otherwise the weekly refresh starts automatically when the app loads live counts.
+
+Rechecks page through the live follower/following lists and remove a flag only when Instagram explicitly returns that username as a current relationship. A profile merely reappearing under the same username is not enough. Instagram sometimes hides disabled accounts from those lists even while including them in its headline total; absent usernames therefore stay flagged. After a successful check, the app repeats it in the background at most once every seven days when the app is opened. Failed or malformed Instagram responses change nothing and retry no sooner than the next day. The per-profile schedule lives in `disabled-recheck.json` next to `disabledaccounts.json`.
 
 The Followers and Following cards make one authenticated profile check per account per app session and show Instagram's live totals when available, once you're logged in. If you haven't logged in, or the check fails, the cards fall back to the export totals.
 
-The card subtitle always shows the full trail, so every step is visible whether or not you're logged in: `103 in export · 101 after 2 flags · 1 unexplained`. Flags are subtracted *before* the comparison with Instagram — an account you've already flagged counts as explained, not as part of the remainder. That last number is what **Find the difference** hunts down.
+The card subtitle always shows the full trail, so every step is visible whether or not you're logged in: `103 in export · 101 after 2 flags · 1 to identify`. Flags are subtracted *before* the comparison with Instagram — an account you've already flagged counts as explained, not as part of the remainder. That last number is what **Find the difference** hunts down.
 
 ### Network-side disabled-account detection
 
@@ -212,9 +250,10 @@ For each handle in "Don't follow me back", this fetches `instagram.com/<handle>`
 ```
 data/
   MM-DD-YYYY/
-    followers_1.json
-    following.json
+    followers_1.json     # followers_2.json, ... when the export is split
+    following_1.json
   disabledaccounts.json
+  identities.json        # Instagram account ids seen live, and proven renames
 dist/
   report.json
 ig-session/           # only after you click "Log into Instagram"
@@ -229,9 +268,10 @@ ig-session/           # only after you click "Log into Instagram"
     <internal-id>/
       data/
         MM-DD-YYYY/
-          followers_1.json
-          following.json
+          followers_1.json     # followers_2.json, ... when the export is split
+          following_1.json
       disabledaccounts.json
+      identities.json
   dist/
     report.json
   ig-session/          # only after you click "Log into Instagram"

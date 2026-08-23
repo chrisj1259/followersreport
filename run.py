@@ -86,6 +86,7 @@ LIVE_PROFILE_COUNTS: dict[str, dict[str, int]] = {}
 IG_SESSION_DIR: Path | None = None
 IG_SESSION_MARKER = ".authenticated"
 _LOGIN_PROC: subprocess.Popen | None = None
+_IG_HELPER_LOCK = threading.Lock()
 
 
 def _set_data_paths(*, data_dir: Path, out_dir: Path, disabled_file: Path) -> None:
@@ -195,6 +196,7 @@ def enable_profile_mode(storage_root: Path, out_dir: Path) -> None:
     PROFILE_OUT_DIR = out_dir
     IG_SESSION_DIR = storage_root / "ig-session"
     LIVE_PROFILE_COUNTS.clear()
+    invalidate_relationships_cache()
     PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
     _set_data_paths(data_dir=PROFILE_ROOT, out_dir=out_dir,
                     disabled_file=PROFILE_ROOT / ".inactive-disabledaccounts.json")
@@ -363,6 +365,16 @@ DISABLED_MARKERS = (
     "isn't available",
     "no longer available",
 )
+# Anonymous profile views get login-walled, and the wall is a normal 200 with
+# full page furniture. Without these markers the wall is indistinguishable
+# from a live profile, so a gone account comes back "active".
+LOGIN_WALL_MARKERS = (
+    "login_and_signup_page",
+    "loginform",
+    'name="username"',
+    "log in to instagram",
+    "/accounts/login/?next=",
+)
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
@@ -370,13 +382,12 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
 # ---------- disabled-account persistence (data/disabledaccounts.json) ----------
 
 
-def _read_flagged() -> set[str]:
-    """Read data/disabledaccounts.json (flat list of usernames) and return a
-    lowercased set. Missing file -> empty set (no flags)."""
-    if not DISABLED_FILE.exists():
+def _read_flagged_file(path: Path) -> set[str]:
+    """Read one flat JSON username list. Missing/malformed -> empty set."""
+    if not path.exists():
         return set()
     try:
-        raw = json.loads(DISABLED_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return set()
     if not isinstance(raw, list):
@@ -384,10 +395,19 @@ def _read_flagged() -> set[str]:
     return {str(u).strip().lower() for u in raw if u}
 
 
+def _read_flagged() -> set[str]:
+    """Read the active profile's saved disabled-account handles."""
+    return _read_flagged_file(DISABLED_FILE)
+
+
+def _write_flagged_file(path: Path, handles: set[str]) -> None:
+    _atomic_json(path, sorted(handles))
+
+
 def _write_flagged(handles: set[str]) -> None:
     """Atomic write via temp-file rename so a crash mid-write can't corrupt
     the user's curated list."""
-    _atomic_json(DISABLED_FILE, sorted(handles))
+    _write_flagged_file(DISABLED_FILE, handles)
 
 
 def add_flagged(username: str) -> list[str]:
@@ -432,6 +452,13 @@ def looks_disabled(username: str, timeout: float = 8.0) -> bool | None:
     body = html.lower()
     if any(m in body for m in DISABLED_MARKERS):
         return True
+    # Instagram's anonymous login wall is a full page WITH an og:description,
+    # so the check below read it as a healthy profile and reported deleted
+    # accounts as active -- quietly shrinking the very list the user is
+    # hunting through. A wall is "we were not allowed to look", which is
+    # exactly what None means here.
+    if any(m in body for m in LOGIN_WALL_MARKERS):
+        return None
     if 'property="og:description"' in body:
         return False
     return None
@@ -535,16 +562,19 @@ def _scrapling_result(mode: str, args: list[str], timeout: int) -> dict | None:
     try:
         env = os.environ.copy()
         env["IFR_IG_RESULT_FILE"] = result_path
-        result = subprocess.run(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            check=False,
-            env=env,
-        )
+        # ponytail: one saved login means one global lock; split by session only
+        # if the app ever supports simultaneous Instagram logins.
+        with _IG_HELPER_LOCK:
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check=False,
+                env=env,
+            )
         payload = json.loads(Path(result_path).read_text(encoding="utf-8"))
         if result.returncode or not isinstance(payload, dict):
             raise ValueError("checker failed")
@@ -557,8 +587,12 @@ def _scrapling_result(mode: str, args: list[str], timeout: int) -> dict | None:
 
 
 def _authenticated_statuses(usernames: list[str]) -> dict[str, bool | None] | None:
-    """Use the saved, hand-authenticated Instagram session when it is available."""
-    statuses = _scrapling_result("status", usernames, max(90, 30 + 20 * len(usernames)))
+    """Use the saved, hand-authenticated Instagram session when it is available.
+
+    Routes through _authenticated_raw_statuses() so a large flagged list gets
+    the same AUTH_STATUS_BATCH chunking instead of one unbounded subprocess call.
+    """
+    statuses = _authenticated_raw_statuses(usernames)
     if statuses is None:
         return None
     return {u: False if statuses.get(u) == "active" else None for u in usernames}
@@ -605,6 +639,80 @@ def _authenticated_profile_counts(username: str) -> dict[str, int] | None:
     if all(isinstance(counts.get(k), int) and counts[k] >= 0 for k in ("followers", "following")):
         return {"followers": counts["followers"], "following": counts["following"]}
     return None
+
+
+# One relationship walk costs a Chrome launch, a profile page load and a
+# request per ~23 accounts -- about 16 seconds for a 650-follower account, and
+# it grows with the account. Clicking "Find the difference" twice in a row, or
+# running a scan right after the weekly recheck, used to pay that twice for an
+# answer that cannot have changed. Short TTL: long enough to make a re-run
+# instant, short enough that a deliberate re-check still sees new data.
+#
+# ponytail: single-entry cache keyed by username; the app checks one account at
+# a time. Make it a dict if simultaneous logins ever land.
+RELATIONSHIPS_TTL_SECONDS = 300
+_RELATIONSHIPS_CACHE: dict[str, tuple[float, dict[str, dict[str, str]]]] = {}
+
+
+def invalidate_relationships_cache() -> None:
+    _RELATIONSHIPS_CACHE.clear()
+
+
+def _relationships_timeout() -> int:
+    """Seconds to allow one full relationship walk.
+
+    The old flat 180s was a bug for anyone with a real following: paging a few
+    thousand accounts through a headless browser takes minutes, the subprocess
+    got killed mid-walk, and the app reported "Instagram relationship list
+    unavailable" for a request that was working fine. Scale off the live totals
+    when they are already cached.
+
+    ponytail: linear in list size, floor 5 min / ceiling 30 min. Revisit only
+    if Instagram's per-page latency changes by an order of magnitude.
+    """
+    try:
+        counts = cached_live_profile_counts() or {}
+    except OSError:
+        counts = {}
+    total = sum(v for v in counts.values() if isinstance(v, int))
+    return max(300, min(1800, 120 + total // 20))
+
+
+def _authenticated_relationships(username: str) -> dict[str, dict[str, str]] | None:
+    """Every follower/following username Instagram currently exposes, each
+    mapped to that account's numeric Instagram user id.
+
+    The id is the whole point: usernames are the only handle the data export
+    carries, and they change. The id does not, so a username that disappears
+    from your export's point of view can be positively identified as "same
+    person, new handle" instead of being guessed at from follow timestamps.
+    """
+    cached = _RELATIONSHIPS_CACHE.get(username)
+    if cached and time.time() - cached[0] < RELATIONSHIPS_TTL_SECONDS:
+        return cached[1]
+    payload = _scrapling_result("relationships", [username], _relationships_timeout())
+    if payload is None:
+        return None
+    out: dict[str, dict[str, str]] = {}
+    for side in ("followers", "following"):
+        value = payload.get(side)
+        if not isinstance(value, dict):
+            return None
+        if not all(isinstance(u, str) and isinstance(pk, str) for u, pk in value.items()):
+            return None
+        out[side] = value
+    # The helper already read the profile to get the account id, so the live
+    # totals came back with it for free. Publishing them here means the stat
+    # cards and the ledger no longer need their own Chrome launch.
+    counts = payload.get("counts")
+    if isinstance(counts, dict):
+        live = {k: counts.get(k) for k in ("followers", "following")}
+        if all(isinstance(v, int) and v >= 0 for v in live.values()):
+            active = _profiles_payload()["active_profile_id"]
+            if active:
+                LIVE_PROFILE_COUNTS[active] = live
+    _RELATIONSHIPS_CACHE[username] = (time.time(), out)
+    return out
 
 
 def _live_profile_counts() -> dict[str, int] | None:
@@ -702,7 +810,11 @@ def _parse_multipart(content_type: str, body: bytes):
     """Tiny stdlib multipart/form-data parser. Returns (fields, files).
 
     fields: {name: decoded_string} for non-file form fields.
-    files:  {name: raw_bytes} for uploaded files (Content-Disposition has filename=).
+    files:  {name: [raw_bytes, ...]} for uploaded files (Content-Disposition
+            has filename=). A list, not a single value: Instagram splits a
+            large export across followers_1.json, followers_2.json, ... and
+            keeping only the last part silently dropped every follower after
+            the first file.
 
     ponytail: hand-rolled because cgi.FieldStorage is deprecated in 3.13. Hand-
     rolled is also much smaller — RFC 2046 favors simplicity here. Browsers
@@ -714,7 +826,7 @@ def _parse_multipart(content_type: str, body: bytes):
         return None
     delim = b"--" + (m.group(1) or m.group(2)).encode()
     fields: dict[str, str] = {}
-    files: dict[str, bytes] = {}
+    files: dict[str, list[bytes]] = {}
     for part in body.split(delim):
         part = part.strip(b"\r\n")
         if not part or part == b"--":
@@ -728,7 +840,7 @@ def _parse_multipart(content_type: str, body: bytes):
             continue
         name = name_m.group(1).decode("utf-8", "replace")
         if b'filename=' in head:
-            files[name] = data
+            files.setdefault(name, []).append(data)
         else:
             fields[name] = data.decode("utf-8", "replace")
     return fields, files
@@ -914,6 +1026,104 @@ def by_ts_desc(records: list[dict]) -> list[dict]:
 TOMBSTONE_PREFIX = "__deleted__"
 
 
+def _resolve_chain(chain: dict[str, str]) -> dict[str, str]:
+    """Follow a -> b -> c to the end. The `seen` guard stops a reused handle
+    from looping forever."""
+    resolved: dict[str, str] = {}
+    for old in chain:
+        seen, new = {old}, chain[old]
+        while new in chain and new not in seen:
+            seen.add(new)
+            new = chain[new]
+        if new != old:
+            resolved[old] = new
+    return resolved
+
+
+# ---------- identity ledger (data/identities.json) ----------
+#
+# The data export carries usernames and nothing else, so by handle alone a
+# rename is indistinguishable from "they left and a stranger arrived".
+# detect_renames() infers it from a shared follow timestamp, which needs two
+# snapshots on disk and a timestamp that happens to be unique on both sides --
+# it cannot see a rename that happened before your first import or after your
+# most recent export.
+#
+# Instagram's live relationship list carries the numeric user id, which never
+# changes. Recording id -> username on every live fetch turns rename detection
+# from a heuristic into a lookup: same id, different username, and the app
+# knows for certain. This ledger is what makes that persist across runs.
+
+
+def _identity_path() -> Path:
+    return DISABLED_FILE.with_name("identities.json")
+
+
+def _read_identities() -> dict:
+    """{"ids": {instagram_id: username}, "renames": {old_handle: new_handle}}"""
+    try:
+        payload = json.loads(_identity_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    ids = payload.get("ids")
+    renames = payload.get("renames")
+    return {
+        "ids": ids if isinstance(ids, dict) else {},
+        "renames": renames if isinstance(renames, dict) else {},
+    }
+
+
+def known_renames() -> dict[str, str]:
+    """Every recorded username change, each old handle resolved to the handle
+    the account carries now."""
+    return _resolve_chain(_read_identities()["renames"])
+
+
+def record_live_identities(relationships: dict[str, dict[str, str]]) -> dict[str, str]:
+    """Fold one live relationship fetch into the ledger. Returns the renames
+    this fetch newly proved, {old: new}.
+
+    Two directions of evidence, both exact:
+      - a known id now answering to a different username  -> that is a rename
+      - a username now answering to a *different* id      -> the old handle was
+        released and re-registered by someone else, so any rename recorded
+        against it is stale and gets dropped rather than left to silently
+        rewrite an unrelated person's row.
+    """
+    store = _read_identities()
+    ids, renames = dict(store["ids"]), dict(store["renames"])
+    live: dict[str, str] = {}
+    for side in ("followers", "following"):
+        for username, pk in relationships.get(side, {}).items():
+            if pk:
+                live[pk] = username
+
+    fresh: dict[str, str] = {}
+    for pk, username in live.items():
+        previous = ids.get(pk)
+        if previous and previous != username:
+            fresh[previous] = username
+            renames[previous] = username
+        ids[pk] = username
+
+    # A handle that is live right now is somebody's current handle, so any
+    # rename recorded *away* from it is stale -- either the person renamed
+    # back, or the handle was released and re-registered by someone else.
+    # Leaving it would silently rewrite an unrelated person's row.
+    for username in live.values():
+        if username in renames and username not in fresh:
+            renames.pop(username, None)
+
+    if ids != store["ids"] or renames != store["renames"]:
+        try:
+            _atomic_json(_identity_path(), {"ids": ids, "renames": renames})
+        except OSError as e:
+            print(f"warning: could not update {_identity_path().name}: {e}", file=sys.stderr)
+    return _resolve_chain(fresh)
+
+
 def detect_renames(prev: list[dict], curr: list[dict]) -> dict[str, str]:
     """Map old_handle -> new_handle for people who changed their username.
 
@@ -949,14 +1159,7 @@ def renames_across(raw_pairs: list[tuple[str, list[dict], list[dict]]]) -> dict[
     for (_, p_f, p_g), (_, c_f, c_g) in zip(raw_pairs, raw_pairs[1:]):
         chain.update(detect_renames(p_f, c_f))
         chain.update(detect_renames(p_g, c_g))
-    resolved = {}
-    for old in chain:
-        seen, new = {old}, chain[old]
-        while new in chain and new not in seen:
-            seen.add(new)
-            new = chain[new]
-        resolved[old] = new
-    return resolved
+    return _resolve_chain(chain)
 
 
 # ---------- per-snapshot ----------
@@ -1199,9 +1402,17 @@ def _reconcile_side(counts: dict, live: dict | None, side: str) -> dict:
     }
 
 
+# Verifying a missing handle costs one authenticated profile fetch, a few
+# seconds each. The missing list is normally tiny, but a badly stale export can
+# make it large, and nobody wants a twenty-minute scan. Past this many we stop
+# verifying and say so rather than quietly guessing.
+MISSING_VERIFY_LIMIT = 60
+
+
 def audit_counts(*, check_network: bool = False, scope: str = "both",
                  timeout: float = 8.0, fetch_live: bool = False,
-                 progress=None) -> dict:
+                 progress=None, verify_missing: bool = False,
+                 relationships: dict[str, dict[str, str]] | None = None) -> dict:
     """Explain, number by number, how the headline counts were reached.
 
     Instagram's profile page hides accounts it no longer serves — deactivated,
@@ -1242,11 +1453,119 @@ def audit_counts(*, check_network: bool = False, scope: str = "both",
         "following": _reconcile_side(counts, live, "following"),
         "scan": None,
     }
+    pools = {"followers": raw_followers, "following": raw_following}
+    wanted = ("followers", "following") if scope == "both" else (scope,)
+    if relationships is not None:
+        # Every username change Instagram's live list has ever proved to us,
+        # each old handle pointed at the handle that account carries today.
+        renames = known_renames()
+        missing_by_side: dict[str, list] = {"followers": [], "following": []}
+        renamed_by_side: dict[str, list] = {"followers": [], "following": []}
+        extra_by_side: dict[str, list] = {"followers": [], "following": []}
+        listed_by_side: dict[str, int] = {}
+        missing_by_username: dict[str, dict] = {}
+        renamed_pairs: dict[str, str] = {}
+        checked: set[str] = set()
+        visible: set[str] = set()
+        for side in wanted:
+            live_side = relationships.get(side)
+            if not isinstance(live_side, dict):
+                raise ValueError(f"Instagram {side} relationship list unavailable")
+            active = {r["username"]: r for r in pools[side] if r["username"] not in flagged}
+            checked.update(active)
+            listed_by_side[side] = len(live_side)
+            visible.update(active.keys() & live_side.keys())
+
+            # A handle absent from Instagram's list because the person renamed
+            # is NOT a missing account. Splitting these out is the difference
+            # between "flag these 9" and "flag these 6, two of them just
+            # changed their name" -- flagging a renamed person as disabled is
+            # the single easiest way to make the counts permanently wrong.
+            side_renamed = {u: renames[u] for u in active
+                            if u in renames and renames[u] in live_side}
+            renamed_pairs.update(side_renamed)
+            renamed_by_side[side] = by_ts_desc(
+                [dict(active[u], renamed_to=new) for u, new in side_renamed.items()])
+            missing_by_side[side] = by_ts_desc(
+                [r for u, r in active.items()
+                 if u not in live_side and u not in side_renamed])
+            for record in missing_by_side[side]:
+                missing_by_username.setdefault(record["username"], record)
+
+            # The other direction, which nothing here used to compute: accounts
+            # Instagram lists that the export has no row for. This is where a
+            # rename's *new* handle lands, and where every follow/unfollow made
+            # after the export was generated lands. Without it the arithmetic
+            # cannot close -- the gap is (missing - extra), not just missing --
+            # and a stale export reads as a pile of unexplained accounts.
+            accounted = set(active) | set(side_renamed.values()) | flagged
+            extra_by_side[side] = sorted(set(live_side) - accounted)
+
+        # An account can be missing from Instagram's relationship list for two
+        # completely different reasons, and telling the user to flag both is
+        # how live accounts end up buried in the "disabled" panel forever:
+        #
+        #   1. the account is gone      -- deactivated, deleted, banned, blocked
+        #   2. the RELATIONSHIP is gone -- you unfollowed them, or they
+        #      unfollowed you, after Instagram generated this export
+        #
+        # Only (1) is a disabled account. (2) is a live person and flagging
+        # them is simply wrong. One authenticated profile fetch separates them:
+        # if the profile still loads, the relationship ended, not the account.
+        departed_by_side: dict[str, list] = {"followers": [], "following": []}
+        verified = False
+        truncated = False
+        if verify_missing and missing_by_username and ig_authenticated():
+            names = sorted(missing_by_username)
+            truncated = len(names) > MISSING_VERIFY_LIMIT
+            statuses = _authenticated_raw_statuses(names[:MISSING_VERIFY_LIMIT],
+                                                   progress=progress) or {}
+            if statuses:
+                verified = True
+                alive = {u for u, state in statuses.items() if state == "active"}
+                for side in wanted:
+                    departed_by_side[side] = [r for r in missing_by_side[side]
+                                              if r["username"] in alive]
+                    missing_by_side[side] = [r for r in missing_by_side[side]
+                                             if r["username"] not in alive]
+                for username in alive:
+                    missing_by_username.pop(username, None)
+
+        departed_by_username: dict[str, dict] = {}
+        for side in wanted:
+            for record in departed_by_side[side]:
+                departed_by_username.setdefault(record["username"], record)
+
+        audit["scan"] = {
+            "scope": scope,
+            "checked": len(checked),
+            "candidates": by_ts_desc(list(missing_by_username.values())),
+            "followers_candidates": missing_by_side["followers"],
+            "following_candidates": missing_by_side["following"],
+            # Alive, just no longer connected. Never a flag candidate.
+            "departed": by_ts_desc(list(departed_by_username.values())),
+            "followers_departed": departed_by_side["followers"],
+            "following_departed": departed_by_side["following"],
+            "verified": verified,
+            "verify_truncated": truncated,
+            "renamed": renamed_pairs,
+            "followers_renamed": renamed_by_side["followers"],
+            "following_renamed": renamed_by_side["following"],
+            "followers_extra": extra_by_side["followers"],
+            "following_extra": extra_by_side["following"],
+            "followers_listed": listed_by_side.get("followers"),
+            "following_listed": listed_by_side.get("following"),
+            "live_profiles": len(visible),
+            "authenticated": True,
+            "method": "relationships",
+            "gone": [],
+            "unverified": [],
+        }
+        return audit
+
     if not check_network:
         return audit
 
-    pools = {"followers": raw_followers, "following": raw_following}
-    wanted = ("followers", "following") if scope == "both" else (scope,)
     handles: dict[str, dict] = {}
     for side in wanted:
         for record in pools[side]:
@@ -1282,7 +1601,8 @@ def audit_counts(*, check_network: bool = False, scope: str = "both",
 # the UI polls /scan-status.
 _SCAN_LOCK = threading.Lock()
 _SCAN_JOB: dict = {"state": "idle", "checked": 0, "total": 0,
-                   "audit": None, "error": None, "profile_id": None}
+                   "audit": None, "error": None, "profile_id": None,
+                   "warning": None}
 
 
 def scan_job_snapshot() -> dict:
@@ -1299,12 +1619,15 @@ def start_scan_job(*, scope: str = "both") -> dict:
     """
     if scope not in AUDIT_SCOPES:
         raise ValueError(f"scope must be one of {', '.join(AUDIT_SCOPES)}")
+    profiles = _profiles_payload()
+    profile_id = profiles["active_profile_id"]
+    profile_name = next((p["name"] for p in profiles["profiles"] if p.get("id") == profile_id), None)
     with _SCAN_LOCK:
         if _SCAN_JOB["state"] == "running":
             return dict(_SCAN_JOB)
         _SCAN_JOB.update({"state": "running", "checked": 0, "total": 0,
-                          "audit": None, "error": None,
-                          "profile_id": _profiles_payload()["active_profile_id"]})
+                          "audit": None, "error": None, "warning": None,
+                          "profile_id": profile_id})
         started = dict(_SCAN_JOB)
 
     def progress(checked: int, total: int) -> None:
@@ -1313,8 +1636,35 @@ def start_scan_job(*, scope: str = "both") -> dict:
 
     def work() -> None:
         try:
-            audit = audit_counts(check_network=True, scope=scope, progress=progress)
-        except (OSError, ValueError, FileNotFoundError) as e:
+            relationships = (_authenticated_relationships(profile_name)
+                             if profile_name and ig_authenticated() else None)
+            if relationships is not None:
+                # Fold the live ids into the ledger BEFORE auditing, so a
+                # rename this very fetch proved is already known when the audit
+                # decides which absent handles are actually gone.
+                record_live_identities(relationships)
+            elif profile_name and ig_authenticated():
+                # Logged in, but Instagram would not hand over the lists. The
+                # per-handle fallback below is far weaker, and silently
+                # downgrading to it is what makes the feature look like it
+                # "found nothing" -- say so instead.
+                with _SCAN_LOCK:
+                    _SCAN_JOB["warning"] = (
+                        f"Instagram would not return the follower/following lists for "
+                        f"@{profile_name}. Checking each account one at a time instead, "
+                        f"which is slower and can leave most of them unverified. If you "
+                        f"renamed @{profile_name} on Instagram, update the account name "
+                        f"in this app to match."
+                    )
+            audit = (audit_counts(scope=scope, relationships=relationships,
+                                  verify_missing=True, progress=progress)
+                     if relationships is not None else
+                     audit_counts(check_network=True, scope=scope, progress=progress))
+        except Exception as e:
+            # Catch-all, not just the expected I/O errors: this runs on its own
+            # thread, and start_scan_job() refuses a second scan while one is
+            # "running" -- any exception that slipped past a narrower except
+            # would wedge every future scan until the server restarts.
             with _SCAN_LOCK:
                 _SCAN_JOB.update({"state": "error", "error": str(e)})
             return
@@ -1327,6 +1677,137 @@ def start_scan_job(*, scope: str = "both") -> dict:
             _SCAN_JOB.update({"state": "done", "audit": audit})
 
     threading.Thread(target=work, name="count-audit-scan", daemon=True).start()
+    return started
+
+
+# ---------- periodic saved-flag recheck ----------
+
+RECHECK_INTERVAL_SECONDS = 7 * 24 * 60 * 60
+RECHECK_RETRY_SECONDS = 24 * 60 * 60
+_RECHECK_LOCK = threading.Lock()
+_RECHECK_JOB: dict = {"state": "idle", "checked": 0, "reenabled": [],
+                      "remaining": 0, "error": None, "automatic": False,
+                      "profile_id": None}
+
+
+def _recheck_state_path(flags_path: Path) -> Path:
+    return flags_path.with_name("disabled-recheck.json")
+
+
+def _read_recheck_state(flags_path: Path) -> dict:
+    try:
+        payload = json.loads(_recheck_state_path(flags_path).read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _periodic_recheck_due(flags_path: Path) -> bool:
+    if not _read_flagged_file(flags_path):
+        return False
+    next_due = _read_recheck_state(flags_path).get("next_due")
+    return not isinstance(next_due, (int, float)) or time.time() >= next_due
+
+
+def _record_recheck(flags_path: Path, *, success: bool) -> None:
+    now = int(time.time())
+    state = _read_recheck_state(flags_path)
+    state["last_attempt"] = now
+    state["next_due"] = now + (RECHECK_INTERVAL_SECONDS if success else RECHECK_RETRY_SECONDS)
+    if success:
+        state["last_success"] = now
+    _atomic_json(_recheck_state_path(flags_path), state)
+
+
+def recheck_job_snapshot() -> dict:
+    with _RECHECK_LOCK:
+        return dict(_RECHECK_JOB)
+
+
+def start_recheck_job(*, force: bool = False) -> dict | None:
+    """Start one relationship-list recheck for the active profile.
+
+    Automatic calls return None when the weekly check is not due. Manual
+    calls ignore the schedule. The worker captures the profile's paths before
+    starting, so switching accounts cannot write flags into the wrong profile.
+    """
+    payload = _profiles_payload()
+    profile_id = payload["active_profile_id"]
+    if profile_id is None:
+        raise RuntimeError("select an account before rechecking saved flags")
+    profile = next(p for p in payload["profiles"] if p.get("id") == profile_id)
+    flags_path = DISABLED_FILE
+    flagged = _read_flagged_file(flags_path)
+    if not force and not _periodic_recheck_due(flags_path):
+        return None
+    if not ig_authenticated():
+        raise RuntimeError("not logged into Instagram yet")
+
+    with _RECHECK_LOCK:
+        if _RECHECK_JOB["state"] == "running":
+            if _RECHECK_JOB["profile_id"] != profile_id:
+                raise RuntimeError("another account recheck is already running")
+            return dict(_RECHECK_JOB)
+        _RECHECK_JOB.update({
+            "state": "running", "checked": len(flagged), "reenabled": [],
+            "remaining": len(flagged), "error": None, "automatic": not force,
+            "profile_id": profile_id,
+        })
+        started = dict(_RECHECK_JOB)
+
+    def work() -> None:
+        # Everything below runs on its own thread, and start_recheck_job()
+        # refuses a second recheck for this profile while one is "running" --
+        # any exception that escaped this function, including from the
+        # _authenticated_relationships() call itself, would wedge the job
+        # until the server restarts. One catch-all covers the whole worker
+        # rather than guarding each risky call separately.
+        try:
+            relationships = _authenticated_relationships(profile["name"])
+            if relationships is None:
+                try:
+                    _record_recheck(flags_path, success=False)
+                except OSError:
+                    pass
+                with _RECHECK_LOCK:
+                    _RECHECK_JOB.update({
+                        "state": "error",
+                        "error": (f"Instagram would not return the follower/following lists "
+                                  f"for @{profile['name']}; no flags changed. If you renamed "
+                                  f"that account on Instagram, update the account name here "
+                                  f"to match."),
+                    })
+                return
+
+            record_live_identities(relationships)
+            renamed = known_renames()
+            current = _read_flagged_file(flags_path)
+            live = relationships["followers"].keys() | relationships["following"].keys()
+            # A flagged handle whose owner simply renamed is not disabled. The
+            # ledger proves that by id, so clear the flag on the old handle
+            # too -- otherwise the person stays hidden in the disabled panel
+            # forever under a name nobody uses any more. The whole ledger is
+            # consulted, not just what this fetch proved, so a rename recorded
+            # weeks ago still frees its old handle.
+            reenabled = sorted(current & (live | {old for old, new in renamed.items()
+                                                  if new in live}))
+            if reenabled:
+                _write_flagged_file(flags_path, current - set(reenabled))
+            remaining = len(current) - len(reenabled)
+            if reenabled and _profiles_payload()["active_profile_id"] == profile_id:
+                _refresh_active_report()
+            _record_recheck(flags_path, success=True)
+        except Exception as e:
+            with _RECHECK_LOCK:
+                _RECHECK_JOB.update({"state": "error", "error": str(e)})
+            return
+        with _RECHECK_LOCK:
+            _RECHECK_JOB.update({
+                "state": "done", "reenabled": reenabled,
+                "remaining": remaining,
+            })
+
+    threading.Thread(target=work, name="disabled-account-recheck", daemon=True).start()
     return started
 
 
@@ -1350,10 +1831,83 @@ def _print_side(label: str, side: dict) -> None:
             print(f"    reconciled — the numbers agree")
 
 
+def _print_relationship_scan(scan: dict) -> None:
+    """Print both directions of the comparison against Instagram's live lists.
+
+    Only one direction used to exist. "In your export but not on Instagram" is
+    half the story; "on Instagram but not in your export" is where a rename's
+    new handle and every follow made after the export was generated live, and
+    without it the two numbers can never be made to add up.
+    """
+    print(f"{chr(10)}compared {scan['checked']} account(s) against Instagram's own lists.")
+    for side in ("followers", "following"):
+        missing = scan[f"{side}_candidates"]
+        renamed = scan[f"{side}_renamed"]
+        extra = scan[f"{side}_extra"]
+        listed = scan.get(f"{side}_listed")
+        print(f"{chr(10)}  {side.upper()}  (Instagram's list returned {listed})")
+        for record in renamed:
+            print(f"    [renamed]                     @{record['username']}"
+                  f" -> @{record['renamed_to']}")
+        for record in scan[f"{side}_departed"]:
+            verb = "they unfollowed you" if side == "followers" else "you unfollowed them"
+            print(f"    [no longer connected]         @{record['username']}"
+                  f"  (profile is alive - {verb})")
+        for record in missing:
+            print(f"    [no profile found]            @{record['username']}")
+        for username in extra:
+            print(f"    [on Instagram, not in export] @{username}")
+        if not (missing or renamed or extra or scan[f"{side}_departed"]):
+            print("    reconciled - every account matches")
+    if any(scan[f"{side}_extra"] for side in ("followers", "following")):
+        print(f"{chr(10)}Accounts on Instagram but not in your export are people you "
+              f"gained (or who{chr(10)}renamed) after the export was generated. Request "
+              f"a fresh export to bring them in.")
+    if scan.get("departed"):
+        print(f"{chr(10)}{len(scan['departed'])} account(s) are alive on Instagram but no "
+              f"longer connected to you.{chr(10)}The relationship ended after this export "
+              f"was generated - do NOT flag these,{chr(10)}they are not disabled accounts. "
+              f"A fresh export drops them on its own.")
+    if scan["candidates"]:
+        verified_note = ("" if scan.get("verified") else
+                         f"{chr(10)}(Instagram would not confirm these profiles, so this "
+                         f"list may still contain live accounts.)")
+        print(f"{chr(10)}{len(scan['candidates'])} account(s) sit in your export and have no "
+              f"reachable profile{chr(10)}- deactivated, deleted, banned, or blocking you. "
+              f"Flag them to take them{chr(10)}out of your counts.{verified_note}")
+    if scan.get("verify_truncated"):
+        print(f"{chr(10)}Only the first {MISSING_VERIFY_LIMIT} missing handles were verified; "
+              f"the rest are unchecked.")
+
+
 def cmd_audit(args: argparse.Namespace) -> None:
     """CLI: python run.py audit [--check-network] [--scope ...] [--flag-gone]"""
-    audit = audit_counts(check_network=args.check_network, scope=args.scope,
-                         fetch_live=True)
+    # Prefer Instagram's own relationship lists when there is a saved login:
+    # one paginated pass answers for every account at once and is the only
+    # source that can tell a rename from a disappearance. The per-handle
+    # probe below is the fallback for logged-out runs. The CLI used to skip
+    # this path entirely, so `audit --check-network` was strictly worse than
+    # the same button in the app.
+    relationships = None
+    if args.check_network and ig_authenticated():
+        payload = _profiles_payload()
+        active = payload["active_profile_id"]
+        profile_name = next((p["name"] for p in payload["profiles"]
+                             if p.get("id") == active), None)
+        if profile_name:
+            print(f"reading Instagram's live follower/following lists for "
+                  f"@{profile_name}...", flush=True)
+            relationships = _authenticated_relationships(profile_name)
+            if relationships is None:
+                print("Instagram would not return the lists; falling back to "
+                      "one-account-at-a-time checks.", flush=True)
+            else:
+                record_live_identities(relationships)
+
+    audit = audit_counts(check_network=args.check_network and relationships is None,
+                         scope=args.scope, fetch_live=True,
+                         verify_missing=relationships is not None,
+                         relationships=relationships)
     print(f"snapshot data/{audit['date_folder']}/")
     for f in audit["source_files"]:
         role = f["bucket"] or "ignored (not a relationship list)"
@@ -1364,6 +1918,9 @@ def cmd_audit(args: argparse.Namespace) -> None:
     _print_side("FOLLOWING", audit["following"])
 
     scan = audit["scan"]
+    if scan is not None and scan.get("method") == "relationships":
+        _print_relationship_scan(scan)
+        return
     if scan is None:
         print("\nRe-run with --check-network to find the specific accounts behind a gap.")
         return
@@ -1397,7 +1954,15 @@ def cmd_audit(args: argparse.Namespace) -> None:
 def _scan_status_payload(job: dict) -> dict:
     """Trim the internal job record down to what the UI needs."""
     return {"state": job["state"], "checked": job["checked"], "total": job["total"],
-            "audit": job["audit"], "error": job["error"]}
+            "audit": job["audit"], "error": job["error"],
+            "warning": job.get("warning")}
+
+
+def _recheck_status_payload(job: dict) -> dict:
+    return {key: job[key] for key in (
+        "state", "checked", "reenabled", "remaining", "error",
+        "automatic", "profile_id",
+    )}
 
 
 class FlagHandler(http.server.SimpleHTTPRequestHandler):
@@ -1462,7 +2027,16 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             if self._reject_without_profile():
                 return
             try:
-                self._send_json(200, {"ok": True, "counts": _live_profile_counts()})
+                counts = _live_profile_counts()
+                response = {"ok": True, "counts": counts}
+                if counts is not None:
+                    try:
+                        job = start_recheck_job(force=False)
+                    except RuntimeError:
+                        job = None
+                    if job is not None:
+                        response["recheck"] = _recheck_status_payload(job)
+                self._send_json(200, response)
             except OSError as e:
                 self.send_error(500, f"could not check live counts: {e}")
             return
@@ -1475,6 +2049,12 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             if self._reject_without_profile():
                 return
             self._send_json(200, {"ok": True, **_scan_status_payload(scan_job_snapshot())})
+            return
+        if self.path == "/recheck-status":
+            if self._reject_without_profile():
+                return
+            self._send_json(200, {"ok": True,
+                                  **_recheck_status_payload(recheck_job_snapshot())})
             return
         if self.path == "/ig-status":
             self._send_json(200, {"ok": True, "state": instagram_login_state()})
@@ -1582,6 +2162,17 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         """POST /recheck-disabled -- refresh every saved flag in one pass."""
         if not ig_authenticated():
             self._send_json(409, {"ok": False, "error": "not logged into Instagram yet"})
+            return
+        # Legacy embedders without profile mode retain the old status-page
+        # pass. The shipped source and desktop entry points both use profiles.
+        if PROFILE_MANIFEST is not None:
+            try:
+                job = start_recheck_job(force=True)
+            except RuntimeError as e:
+                self._send_json(409, {"ok": False, "error": str(e)})
+                return
+            assert job is not None
+            self._send_json(200, {"ok": True, **_recheck_status_payload(job)})
             return
         checked = len(_read_flagged())
         try:
@@ -1834,7 +2425,7 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         except ValueError as e:
             self.send_error(400, f"bad date: {e}")
             return
-        if "followers" not in files or "following" not in files:
+        if not files.get("followers") or not files.get("following"):
             self.send_error(400, "need both 'followers' and 'following' file fields")
             return
 
@@ -1849,8 +2440,12 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
         # substring router, then delegate. The tempdir cleans itself up.
         with tempfile.TemporaryDirectory(prefix="import-") as td:
             src = Path(td)
-            (src / "followers_1.json").write_bytes(files["followers"])
-            (src / "following.json").write_bytes(files["following"])
+            # Every part the browser sent, not just one per field: Instagram
+            # splits big exports into followers_1.json, followers_2.json, ...
+            # and the form now accepts all of them in a single pick.
+            for field in ("followers", "following"):
+                for i, blob in enumerate(files[field], 1):
+                    (src / f"{field}_{i}.json").write_bytes(blob)
             try:
                 n_f, n_g = _stage_snapshot(src, date_str)
             except SystemExit as e:
@@ -1919,6 +2514,15 @@ def _run_server(port: int, handler_cls: type = FlagHandler) -> http.server.HTTPS
     # would leak the flag into any other HTTPServer construction in the process.
     class _Server(http.server.HTTPServer):
         allow_reuse_address = sys.platform != "win32"
+
+        def handle_error(self, request, client_address) -> None:
+            # Reloading the page, navigating away, or closing the window aborts
+            # the socket mid-response. socketserver's default dumps a full
+            # traceback for it, which reads like a crash to anyone watching the
+            # terminal -- and it is completely routine. Swallow connection
+            # teardown only; a real handler bug still prints.
+            if not isinstance(sys.exc_info()[1], ConnectionError):
+                super().handle_error(request, client_address)
 
     try:
         return _Server(("127.0.0.1", port), handler)
@@ -2049,6 +2653,7 @@ def _emit_stub_report() -> None:
                 "snapshots": [],
                 "weeks": [],
                 "unilateral_unfollowed": [],
+                "renamed": {},
             },
             indent=2,
             ensure_ascii=False,
@@ -2068,8 +2673,17 @@ def _stage_snapshot(src: Path, date_str: str) -> tuple[int, int]:
     read_snapshot does, so 'folowers_May2026.json' -> followers bucket while
     'following_hashtags.json' (a real file sitting right next to
     following.json in every export) is vetoed instead of silently becoming
-    your following list. Pre-parses both files so a malformed export produces
+    your following list. Pre-parses the files so a malformed export produces
     a clean error BEFORE we touch data/.
+
+    EVERY file in a bucket is staged, not just the first. Instagram splits a
+    large export across followers_1.json, followers_2.json, ... and this used
+    to copy one file per bucket, so every follower past the first part was
+    dropped on the floor at import time. read_snapshot globs the whole staged
+    folder and always did, which is why the loss was invisible: the report
+    faithfully counted every record that made it to disk, and the missing
+    thousands never got there. That is the single largest source of "the
+    follower count here doesn't match Instagram".
     """
     src = src.resolve()
     if not src.exists():
@@ -2077,35 +2691,48 @@ def _stage_snapshot(src: Path, date_str: str) -> tuple[int, int]:
     if not src.is_dir():
         raise SystemExit(f"source is not a folder: {src}")
 
-    follower_src, following_src = None, None
+    sources: dict[str, list[Path]] = {"followers": [], "following": []}
     for f in sorted(src.iterdir()):
         if not f.is_file():
             continue
         bucket = bucket_for_filename(f.name)
-        if bucket == "followers" and follower_src is None:
-            follower_src = f
-        elif bucket == "following" and following_src is None:
-            following_src = f
+        if bucket:
+            sources[bucket].append(f)
 
-    if follower_src is None:
+    if not sources["followers"]:
         raise SystemExit(f"{src}: no 'followers' file (looked for *follower* in filename)")
-    if following_src is None:
+    if not sources["following"]:
         raise SystemExit(f"{src}: no 'following' file (looked for *following* in filename)")
 
-    f_recs = load_json_records(follower_src)
-    g_recs = load_json_records(following_src)
-    if not f_recs:
-        raise SystemExit(f"{follower_src.name}: parsed 0 records \u2014 bad format or empty?")
-    if not g_recs:
-        raise SystemExit(f"{following_src.name}: parsed 0 records \u2014 bad format or empty?")
+    # Dedupe across parts exactly the way read_snapshot will, so the number
+    # reported back to the user is the number the report goes on to show.
+    parsed = {bucket: {r["username"]: r for f in files for r in load_json_records(f)}
+              for bucket, files in sources.items()}
+    for bucket in ("followers", "following"):
+        if not parsed[bucket]:
+            names = ", ".join(f.name for f in sources[bucket])
+            raise SystemExit(f"{names}: parsed 0 records \u2014 bad format or empty?")
 
     dest = DATA / date_str
     if dest.exists():
-        print(f"warning: {dest} already exists \u2014 overwriting JSON files inside", file=sys.stderr)
+        print(f"warning: {dest} already exists \u2014 replacing the relationship JSON "
+              f"files inside", file=sys.stderr)
     dest.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(follower_src, dest / "followers_1.json")
-    shutil.copy2(following_src, dest / "following.json")
-    return len(f_recs), len(g_recs)
+    written: set[str] = set()
+    for bucket, files in sources.items():
+        for i, f in enumerate(files, 1):
+            name = f"{bucket}_{i}.json"
+            shutil.copy2(f, dest / name)
+            written.add(name)
+    # Only now clear parts left over from a previous, larger import. Doing this
+    # after the copies means a copy that fails partway leaves the folder no
+    # emptier than it started. Re-importing a smaller export would otherwise
+    # strand followers_4.json here and the report would keep counting people
+    # the new export no longer lists.
+    for stale in dest.glob("*.json"):
+        if stale.name not in written and bucket_for_filename(stale.name):
+            stale.unlink()
+    return len(parsed["followers"]), len(parsed["following"])
 
 
 def cmd_import(src: Path, date: datetime) -> None:
@@ -2245,7 +2872,14 @@ def run_analyze(args: argparse.Namespace) -> None:
     # Resolve username changes before anything treats a vanished handle as a
     # loss. An old handle 404s on instagram.com, so without this it reads as a
     # deactivated account and gets flagged — the person just renamed.
-    renamed = renames_across(raw_pairs)
+    #
+    # Two sources, merged: the identity ledger (exact, by Instagram user id,
+    # populated whenever a live relationship fetch runs) and the snapshot
+    # timestamp heuristic (works offline, but needs two snapshots and a
+    # timestamp that happens to be unique on both sides of the diff). Either
+    # alone leaves a hole the other covers, and re-resolving the union follows
+    # a chain that starts in one source and ends in the other.
+    renamed = _resolve_chain({**known_renames(), **renames_across(raw_pairs)})
     deleted = {old for old, new in renamed.items() if new.startswith(TOMBSTONE_PREFIX)}
     for old, new in sorted(renamed.items()):
         label = "deleted" if old in deleted else f"renamed -> @{new}"
