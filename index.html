@@ -1363,6 +1363,11 @@ function filterRows(records, q) {
   return records.filter(r => r.username.includes(q));
 }
 
+function hoursAgo(asOf) {
+  if (typeof asOf !== "number") return "?";
+  return Math.max(1, Math.round((Date.now() / 1000 - asOf) / 3600));
+}
+
 function renderStats(s) {
   const stats = $("stats");
   const c = s.counts;
@@ -1397,9 +1402,19 @@ function renderStats(s) {
     if (flagged > 0) {
       parts.push(`${active.toLocaleString()} after ${flagged.toLocaleString()} flag${flagged === 1 ? "" : "s"}`);
     }
+    // ADR 0001: handles a past scan couldn't establish either way, or a
+    // verify pass didn't get to -- surfaced so uncertain state doesn't
+    // quietly resolve one way or the other. Silence means everything here
+    // is confirmed active or disabled, same convention as the rest of this
+    // trail.
+    const auditSide = state.audit?.[key];
+    const unconfirmed = auditSide ? (auditSide.unverified || 0) + (auditSide.unchecked || 0) : 0;
+    if (unconfirmed > 0) {
+      parts.push(`${unconfirmed.toLocaleString()} unconfirmed`);
+    }
     if (live === null) {
       // No saved Instagram login, so there is no live number to compare against.
-      return flagged > 0 ? parts.join(" \u00b7 ") : "records in this export";
+      return (flagged > 0 || unconfirmed > 0) ? parts.join(" \u00b7 ") : "records in this export";
     }
     const unexplained = active - live;
     // Once a scan has run, the gap is no longer an anonymous number: every
@@ -1427,6 +1442,12 @@ function renderStats(s) {
     }
     else if (unexplained < 0) parts.push(`${(-unexplained).toLocaleString()} behind Instagram`);
     else parts.push("matches Instagram");
+    // One fetch populates both cards' live counts together, so there is
+    // exactly one as-of time per profile, not one per card -- both cards are
+    // always equally fresh or equally stale. Silence means fresh.
+    if (auditSide?.stale) {
+      parts.push(`live as of ${hoursAgo(auditSide.as_of)}h ago`);
+    }
     return parts.join(" \u00b7 ");
   };
   const items = [
@@ -1728,6 +1749,11 @@ async function loadReconcile() {
     state.audit = null;
   }
   renderReconcile();
+  // The stat cards' "N unconfirmed" / staleness trail text reads state.audit,
+  // which isn't populated until this call finishes -- re-render once it is,
+  // so the cards aren't stuck showing the pre-audit trail all page load.
+  const snapshot = latestSnapshot();
+  if (snapshot) renderStats(snapshot);
 }
 
 // ponytail: the sweep is minutes of work on the server's own thread, so the

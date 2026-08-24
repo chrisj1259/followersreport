@@ -95,8 +95,10 @@ print("T2 persistence OK: re-run reproduces identical report.json")
 # === T3: flag pipeline -- flag zelda, expect DFMB -> disabled_accounts ===
 run.add_flagged("zelda_real")
 run.add_flagged("bob_real")
-flag_list = json.loads((sb / "disabledaccounts.json").read_text())
-assert {"bob_real", "zelda_real"}.issubset(flag_list), flag_list
+assert {"bob_real", "zelda_real"}.issubset(run._read_flagged()), run._read_flagged()
+recon = json.loads((sb / "reconciliation.json").read_text())
+assert recon["zelda_real"]["status"] == "disabled" and recon["zelda_real"]["origin"] == "manual", recon["zelda_real"]
+assert recon["bob_real"]["status"] == "disabled" and recon["bob_real"]["origin"] == "manual", recon["bob_real"]
 (sb / "dist" / "report.json").unlink()
 run.run_analyze(argparse.Namespace(check_disabled=False))
 rep3 = json.loads((sb / "dist" / "report.json").read_text())
@@ -110,20 +112,30 @@ assert rep3["snapshots"][0]["counts"]["active_followers"] == 2, rep3["snapshots"
 assert rep3["snapshots"][0]["counts"]["active_following"] == 2, rep3["snapshots"][0]["counts"]
 print(f"T3 flag pipeline OK: zelda moved DFMB->disabled: dfmb={dfmb3} disabled={disabled3}")
 
-# === T3b: saved disabled flags recover only on a positive active verdict ===
+# === T3b: saved disabled flags recover only on a positive active verdict,
+# and only when they weren't flagged manually -- rule 3 says a heuristic
+# verdict never overrides a manual origin, only the user's own unflag does
+# (short of a proven id_confirmed rename). bob_real/zelda_real were flagged
+# via add_flagged (manual) in T3, so a clean False verdict for bob_real must
+# NOT reenable him; heur_flagged is seeded with a heuristic-origin flag
+# instead, to prove the positive-verdict recovery path still works.
 run.add_flagged("mystery_real")
+run._write_flagged_file(run.DISABLED_FILE, run._read_flagged() | {"heur_flagged"})
+recon = json.loads((sb / "reconciliation.json").read_text())
+assert recon["heur_flagged"]["origin"] == "heuristic", recon["heur_flagged"]
 real_looks_disabled = run.looks_disabled
 run.looks_disabled = lambda username, timeout=4.0: {
     "bob_real": False,
     "zelda_real": True,
     "mystery_real": None,
+    "heur_flagged": False,
 }[username]
 try:
-    assert run.recheck_flagged_accounts_by_network() == ["bob_real"]
+    assert run.recheck_flagged_accounts_by_network() == ["heur_flagged"]
 finally:
     run.looks_disabled = real_looks_disabled
-assert json.loads((sb / "disabledaccounts.json").read_text()) == ["mystery_real", "zelda_real"]
-print("T3b saved-flag recheck OK: active removed; disabled/unclear preserved")
+assert run._read_flagged() == {"bob_real", "mystery_real", "zelda_real"}, run._read_flagged()
+print("T3b saved-flag recheck OK: heuristic flags recover on a positive verdict; manual flags don't (rule 3)")
 
 # === T4: end-to-end HTTP /import through FlagHandler ===
 httpd = run._run_server(0, run.FlagHandler)
@@ -228,11 +240,15 @@ try:
     print("T4d POST /recheck-disabled OK: rejected while logged out")
 
     # === T4e: one-click status recheck refreshes flags and the report ===
+    # zelda_real is manually flagged (T3), so even a positive authenticated
+    # verdict must not reenable her (rule 3) -- heur_recheck is seeded with a
+    # heuristic-origin flag to prove the recovery path still fires over HTTP.
+    run._write_flagged_file(run.DISABLED_FILE, run._read_flagged() | {"heur_recheck"})
     real_ig_authenticated = run.ig_authenticated
     real_authenticated_statuses = run._authenticated_statuses
     run.ig_authenticated = lambda: True
     run._authenticated_statuses = lambda usernames: {
-        username: False if username == "zelda_real" else None for username in usernames
+        username: False if username == "heur_recheck" else None for username in usernames
     }
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/recheck-disabled", data=b"")
@@ -241,8 +257,8 @@ try:
     finally:
         run.ig_authenticated = real_ig_authenticated
         run._authenticated_statuses = real_authenticated_statuses
-    assert recheck["ok"] is True and recheck["reenabled"] == ["zelda_real"], recheck
-    assert json.loads((sb / "disabledaccounts.json").read_text()) == ["mystery_real"]
+    assert recheck["ok"] is True and recheck["reenabled"] == ["heur_recheck"], recheck
+    assert run._read_flagged() == {"bob_real", "mystery_real", "zelda_real"}, run._read_flagged()
     print(f"T4e POST /recheck-disabled OK: {recheck}")
 
     # === T5: list snapshots via GET /snapshots ===
@@ -318,6 +334,16 @@ def request_json(port, path, payload=None, expected=200):
         return None
 
 
+def read_flagged_set(profile_dir):
+    """Reconciliation status=='disabled' usernames for a profile dir, read
+    directly by path -- run._read_flagged() only sees the active profile."""
+    path = profile_dir / "reconciliation.json"
+    if not path.exists():
+        return set()
+    records = json.loads(path.read_text())
+    return {u for u, r in records.items() if r.get("status") == "disabled"}
+
+
 def import_snapshot(port, date, follower, following):
     boundary = "----ifr-profile"
     body = (
@@ -367,8 +393,11 @@ try:
     request_json(profile_port, "/profiles", {"action": "select", "profile_id": "../unknown"}, expected=404)
     import_snapshot(profile_port, date_str, "alpha_follower", "alpha_following")
     live = request_json(profile_port, "/live-counts")
-    assert live == {"ok": True, "counts": {"followers": 641, "following": 522}}, live
-    assert request_json(profile_port, "/live-counts") == live
+    assert live["ok"] is True and live["stale"] is False, live
+    assert live["counts"]["followers"] == 641 and live["counts"]["following"] == 522, live
+    assert isinstance(live["counts"]["as_of"], float), live
+    second_live = request_json(profile_port, "/live-counts")
+    assert second_live["counts"] == live["counts"] and second_live["stale"] is False, second_live
     assert live_count_calls == ["alpha.one"], live_count_calls
     request_json(profile_port, "/flag", {"username": "alpha_follower", "action": "add"})
     alpha_flagged = json.loads((desktop / "dist" / "report.json").read_text())["snapshots"][0]
@@ -388,9 +417,9 @@ try:
     request_json(profile_port, "/profiles", {"action": "select", "profile_id": alpha_id})
     alpha_report = json.loads((desktop / "dist" / "report.json").read_text())
     assert alpha_report["snapshots"][0]["not_followed_back"][0]["username"] == "alpha_follower"
-    assert json.loads((desktop / "profiles" / alpha_id / "disabledaccounts.json").read_text()) == ["alpha_disabled"]
+    assert read_flagged_set(desktop / "profiles" / alpha_id) == {"alpha_disabled"}
     request_json(profile_port, "/flag", {"username": "alpha_disabled", "action": "remove"})
-    assert json.loads((desktop / "profiles" / alpha_id / "disabledaccounts.json").read_text()) == []
+    assert read_flagged_set(desktop / "profiles" / alpha_id) == set()
     assert request_json(profile_port, "/snapshots")["snapshots"][0]["date"] == date_str
     request_json(profile_port, "/delete", {"date": date_str})
     assert json.loads((desktop / "dist" / "report.json").read_text())["snapshots"] == []
@@ -398,7 +427,7 @@ try:
     request_json(profile_port, "/profiles", {"action": "select", "profile_id": beta_id})
     beta_report = json.loads((desktop / "dist" / "report.json").read_text())
     assert beta_report["snapshots"][0]["not_followed_back"][0]["username"] == "beta_follower"
-    assert json.loads((desktop / "profiles" / beta_id / "disabledaccounts.json").read_text()) == ["beta_disabled"]
+    assert read_flagged_set(desktop / "profiles" / beta_id) == {"beta_disabled"}
     assert (desktop / "profiles" / beta_id / "data" / date_str).is_dir()
 
     # Weekly saved-flag recheck: one live relationship-list fetch, background
@@ -420,16 +449,22 @@ try:
             if recheck["state"] != "running":
                 break
             time.sleep(0.01)
-        assert recheck["state"] == "done" and recheck["reenabled"] == ["beta_disabled"], recheck
+        # beta_disabled was flagged manually (/flag), and direct relationship-
+        # list membership is heuristic-strength evidence, not manual or a
+        # proven rename -- so rule 3 keeps it flagged even though it's live.
+        # Only the user's own unflag, or a proven id_confirmed rename, moves
+        # a manual flag; T8b below (beta_old -> beta_new) covers that path.
+        assert recheck["state"] == "done" and recheck["reenabled"] == [], recheck
         beta_flags = desktop / "profiles" / beta_id / "disabledaccounts.json"
         schedule = beta_flags.with_name("disabled-recheck.json")
-        assert json.loads(beta_flags.read_text()) == []
+        assert read_flagged_set(beta_flags.parent) == {"beta_disabled"}
         schedule_data = json.loads(schedule.read_text())
         assert schedule_data["next_due"] > time.time() + 6 * 24 * 60 * 60, schedule_data
 
         request_json(profile_port, "/flag", {"username": "beta_waiting", "action": "add"})
         not_due = request_json(profile_port, "/live-counts")
-        assert "recheck" not in not_due and json.loads(beta_flags.read_text()) == ["beta_waiting"], not_due
+        assert ("recheck" not in not_due
+                and read_flagged_set(beta_flags.parent) == {"beta_disabled", "beta_waiting"}), not_due
 
         schedule.unlink()  # force the automatic path due inside this disposable sandbox
         run._authenticated_relationships = lambda username: (
@@ -443,7 +478,7 @@ try:
                 break
             time.sleep(0.01)
         assert recheck["state"] == "done" and recheck["reenabled"] == [], recheck
-        assert json.loads(beta_flags.read_text()) == ["beta_waiting"]
+        assert read_flagged_set(beta_flags.parent) == {"beta_disabled", "beta_waiting"}
         assert relationship_calls == ["beta_two", "beta_two"], relationship_calls
 
         # A flagged account that merely CHANGED ITS USERNAME must come back.
@@ -463,7 +498,7 @@ try:
                 break
             time.sleep(0.01)
         assert recheck["state"] == "done" and recheck["reenabled"] == ["beta_old"], recheck
-        assert json.loads(beta_flags.read_text()) == ["beta_waiting"], beta_flags.read_text()
+        assert read_flagged_set(beta_flags.parent) == {"beta_disabled", "beta_waiting"}
         assert run.known_renames() == {"beta_old": "beta_new"}, run.known_renames()
     finally:
         run._authenticated_relationships = real_relationships
@@ -473,6 +508,26 @@ try:
     persisted = request_json(profile_port, "/profiles")
     assert persisted["active_profile_id"] == beta_id, persisted
     print("T8 desktop profiles OK: validation, 409 guard, import/delete/report/flag isolation, persistence")
+
+    # === T8c: a long-held _IG_HELPER_LOCK (a live scan/recheck job) must not
+    # freeze other requests -- that's the whole point of ThreadingHTTPServer.
+    release_lock = threading.Event()
+
+    def hold_lock():
+        with run._IG_HELPER_LOCK:
+            release_lock.wait(2)
+
+    holder = threading.Thread(target=hold_lock, daemon=True)
+    holder.start()
+    time.sleep(0.2)  # let the holder actually acquire before racing it
+    start = time.time()
+    status = request_json(profile_port, "/ig-status")
+    elapsed = time.time() - start
+    release_lock.set()
+    holder.join(timeout=3)
+    assert status["ok"] is True, status
+    assert elapsed < 1.0, f"/ig-status took {elapsed:.2f}s behind a held _IG_HELPER_LOCK -- server froze"
+    print(f"T8c concurrency OK: /ig-status answered in {elapsed:.2f}s while _IG_HELPER_LOCK was held by another thread")
 finally:
     profile_httpd.shutdown()
     profile_httpd.server_close()
@@ -697,7 +752,8 @@ print("T12 count audit OK: records -> unique -> after-flags -> live gap -> gone 
 # --- T13 identity ledger: renames proved by Instagram user id ---------------
 # The export carries usernames and nothing else, so a rename is invisible to
 # it. Instagram's live list carries the numeric id, which never changes.
-run._atomic_json(run._identity_path(), {"ids": {}, "renames": {}})
+run._atomic_json(run._identity_path(), {"ids": {}})
+run._write_reconciliation({})
 first = run.record_live_identities({
     "followers": {"stays": "1", "old_handle": "2"},
     "following": {"partner": "3"},
@@ -729,7 +785,8 @@ print("T13 identity ledger OK: id-proved renames, chains resolved, stale entries
 # accounts Instagram lists that the export has no row for -- is where a
 # rename's new handle and every post-export follow lands, and without it the
 # arithmetic can never close.
-run._atomic_json(run._identity_path(), {"ids": {}, "renames": {}})
+run._atomic_json(run._identity_path(), {"ids": {}})
+run._write_reconciliation({})
 run.record_live_identities({"followers": {}, "following": {"f1": "501"}})
 run.record_live_identities({"followers": {}, "following": {"f1_renamed": "501"}})
 two_way = run.audit_counts(scope="following", relationships={
@@ -755,7 +812,8 @@ print("T14 two-way reconciliation OK: renamed / missing / not-in-export kept apa
 # perfectly alive (flagging it is simply wrong). One authenticated profile
 # fetch separates them; without the split, live accounts get filed into the
 # disabled panel and stay there.
-run._atomic_json(run._identity_path(), {"ids": {}, "renames": {}})
+run._atomic_json(run._identity_path(), {"ids": {}})
+run._write_reconciliation({})
 real_auth, real_raw = run.ig_authenticated, run._authenticated_raw_statuses
 run.ig_authenticated = lambda: True
 # f0 still has a live profile (you just unfollowed them); f2's profile is gone.
@@ -882,6 +940,100 @@ try:
 finally:
     run.urllib.request.urlopen = real_urlopen
 print("T16 anonymous probe OK: login wall is unverified, not 'active'")
+
+# --- T17 reconciliation status: the transition rules and one fixture per status ---
+# ADR 0001: resolve_reconciliation_status() is pure and covers every rule
+# directly, independent of any storage or HTTP plumbing.
+_t = "2026-01-01T00:00:00"
+active_rec = {"status": "active", "origin": "heuristic", "updated_at": _t}
+manual_disabled = {"status": "disabled", "origin": "manual", "updated_at": _t}
+heuristic_disabled = {"status": "disabled", "origin": "heuristic", "updated_at": _t}
+id_rename = {"status": "renamed", "origin": "id_confirmed", "renamed_to": "new", "updated_at": _t}
+ts_rename = {"status": "renamed", "origin": "timestamp_heuristic", "renamed_to": "new", "updated_at": _t}
+resolve = run.resolve_reconciliation_status
+# Rule 1/2: an id_confirmed rename always wins, even over a manual flag.
+assert resolve(manual_disabled, id_rename) == id_rename, "id_confirmed rename must override manual disabled"
+# Rule 2: once renamed, only a fresh id_confirmed rename can change it --
+# a weaker timestamp_heuristic rename attempt is rejected.
+assert resolve(id_rename, ts_rename) == id_rename, "a proven rename must not be downgraded by a weaker one"
+# Rule 3: a heuristic verdict never overrides a manual origin.
+assert resolve(manual_disabled, heuristic_disabled) == manual_disabled, "heuristic must not re-stamp a manual flag"
+assert resolve(manual_disabled, active_rec) == manual_disabled, "heuristic active must not clear a manual flag"
+assert resolve(manual_disabled, ts_rename) == manual_disabled, "timestamp_heuristic must not override manual (only id_confirmed does, rule 2)"
+# Heuristic overrides heuristic, and a first-ever record is accepted as-is.
+assert resolve(heuristic_disabled, active_rec) == active_rec, "heuristic must be able to override an earlier heuristic"
+assert resolve(None, manual_disabled) == manual_disabled, "first evidence for a handle must be accepted"
+print("T17a resolve_reconciliation_status OK: id_confirmed always wins, renamed sticks, heuristic never overrides manual")
+
+# One fixture handle per status, exercised through the real, persisted paths
+# this app actually uses -- not resolve_reconciliation_status called by hand.
+recon_dir = sb / "recon-fixtures"
+run._set_data_paths(data_dir=recon_dir / "data", out_dir=recon_dir / "dist",
+                    disabled_file=recon_dir / "disabledaccounts.json")
+run.add_flagged("h_disabled")                                    # disabled/manual
+run._persist_scan_verdicts({"h_active": run.ACTIVE})             # active/heuristic
+run._persist_scan_verdicts({"h_unverified": run.UNVERIFIED})     # unverified/heuristic
+run.record_live_identities({"followers": {"h_renamed_old": "9101"}, "following": {}})
+run.record_live_identities({"followers": {"h_renamed_new": "9101"}, "following": {}})  # renamed/id_confirmed
+records = run._read_reconciliation()
+assert records["h_disabled"]["status"] == "disabled" and records["h_disabled"]["origin"] == "manual", records
+assert records["h_active"]["status"] == "active", records["h_active"]
+assert records["h_unverified"]["status"] == "unverified", records["h_unverified"]
+assert records["h_renamed_old"]["status"] == "renamed" and records["h_renamed_old"]["renamed_to"] == "h_renamed_new", records["h_renamed_old"]
+assert run.known_renames() == {"h_renamed_old": "h_renamed_new"}, run.known_renames()
+# unchecked has no fixture record at all -- "we haven't looked" is the
+# absence of an entry, not a stored status (see the ADR discussion of scope).
+assert "h_unchecked" not in records, records
+print("T17b fixture per status OK: active, renamed, disabled, unverified all persisted with the right origin")
+
+# The regression the ADR names by commit: a renamed handle must never be
+# flagged disabled, even if the flag comes in after the rename is known
+# (record_live_identities already enforces rule 1 at write time).
+run.record_live_identities({"followers": {"h_bug_old": "9202"}, "following": {}})
+run.record_live_identities({"followers": {"h_bug_new": "9202"}, "following": {}})
+run.add_flagged("h_bug_old")
+assert run._read_reconciliation()["h_bug_old"]["status"] == "renamed", \
+    "a manual flag on a handle already proven renamed must not create a disabled status"
+assert "h_bug_old" not in run._read_flagged(), run._read_flagged()
+print("T17c renamed-beats-disabled OK: flagging an already-proven-renamed handle cannot mark it disabled")
+
+# "unchecked" at the audit level: a relationships scan that identifies more
+# missing candidates than MISSING_VERIFY_LIMIT allows leaves the overflow
+# unchecked rather than silently calling it a candidate or departed.
+(recon_dir / "data" / date_str).mkdir(parents=True)
+(recon_dir / "data" / date_str / "following.json").write_text(
+    json.dumps([ig("un_a"), ig("un_b")]))
+real_limit = run.MISSING_VERIFY_LIMIT
+real_auth, real_raw = run.ig_authenticated, run._authenticated_raw_statuses
+run.MISSING_VERIFY_LIMIT = 1
+run.ig_authenticated = lambda: True
+run._authenticated_raw_statuses = lambda users, progress=None: {u: "unverified" for u in users}
+try:
+    unchecked_audit = run.audit_counts(scope="following", verify_missing=True, relationships={
+        "followers": {}, "following": {},
+    })
+finally:
+    run.MISSING_VERIFY_LIMIT = real_limit
+    run.ig_authenticated, run._authenticated_raw_statuses = real_auth, real_raw
+assert unchecked_audit["scan"]["verify_truncated"] is True, unchecked_audit["scan"]
+assert unchecked_audit["following"]["unchecked"] == 1, unchecked_audit["following"]
+print("T17d unchecked scope OK: only the MISSING_VERIFY_LIMIT overflow counts as unchecked, not every unprobed handle")
+
+# --- T18 _STATE_LOCK: concurrent writers must not lose each other's updates ---
+# Without a lock spanning the whole read-modify-write, two threads racing
+# add_flagged() can each read the same pre-write dict and the second write
+# silently clobbers the first's addition. 20 usernames makes that race easy
+# to hit if the lock were missing or too narrow.
+run._set_data_paths(data_dir=sb / "lock-test" / "data", out_dir=sb / "lock-test" / "dist",
+                    disabled_file=sb / "lock-test" / "disabledaccounts.json")
+concurrent_names = [f"concurrent_{i}" for i in range(20)]
+concurrent_threads = [threading.Thread(target=run.add_flagged, args=(n,)) for n in concurrent_names]
+for th in concurrent_threads:
+    th.start()
+for th in concurrent_threads:
+    th.join()
+assert run._read_flagged() == set(concurrent_names), run._read_flagged()
+print("T18 _STATE_LOCK OK: 20 concurrent add_flagged calls all persisted, none lost")
 
 shutil.rmtree(sb, ignore_errors=True)
 print("SMOKE_TEST_OK")

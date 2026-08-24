@@ -86,6 +86,7 @@ LIVE_PROFILE_COUNTS: dict[str, dict[str, int]] = {}
 IG_SESSION_DIR: Path | None = None
 IG_SESSION_MARKER = ".authenticated"
 _LOGIN_PROC: subprocess.Popen | None = None
+_LOGIN_PROC_LOCK = threading.Lock()
 _IG_HELPER_LOCK = threading.Lock()
 
 
@@ -379,11 +380,67 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 
-# ---------- disabled-account persistence (data/disabledaccounts.json) ----------
+# ---------- reconciliation status (data/reconciliation.json) ----------
+#
+# ADR 0001: one canonical per-handle record -- {status, origin, updated_at}
+# (plus `renamed_to` when status is "renamed": the shape the ADR names has no
+# field for the rename's target, but resolving a renamed handle needs one, so
+# this is the one addition beyond its literal {status, origin, updated_at}) --
+# replacing disabledaccounts.json's flat flagged-set and identities.json's
+# derived renames dict. Every write anywhere in this file goes through
+# resolve_reconciliation_status(), so "renamed beats disabled" is structural,
+# not a rule every call site has to remember.
+
+# Valid statuses: active | renamed | disabled | unverified | unchecked.
+# Valid origins: manual | heuristic | timestamp_heuristic | id_confirmed |
+# ig_confirmed (see CONTEXT.md). "Exact origins override weaker ones":
+# manual/id_confirmed/ig_confirmed are deliberate or provable;
+# heuristic/timestamp_heuristic are probabilistic and never win against an
+# exact origin already on record.
+_WEAK_ORIGINS = frozenset({"heuristic", "timestamp_heuristic"})
+
+_STATE_LOCK = threading.RLock()
 
 
-def _read_flagged_file(path: Path) -> set[str]:
-    """Read one flat JSON username list. Missing/malformed -> empty set."""
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def resolve_reconciliation_status(existing: dict | None, proposed: dict) -> dict:
+    """Apply the ADR's transition rules and return the record that should be
+    stored -- either `proposed` (the new evidence wins) or `existing`
+    unchanged (the new evidence is rejected). Pure, no I/O; callers persist
+    whatever this returns under _STATE_LOCK.
+
+    Rules, in order:
+      1. An id_confirmed rename always wins -- exact proof of reachability
+         overrides any prior status, including a manual disabled flag.
+      2. Once a handle is recorded renamed, only a fresh id_confirmed rename
+         (rule 1) can change it. This is what makes "flagged a renamed handle
+         as disabled" structurally impossible rather than caller discipline.
+      3. A weak origin (heuristic, timestamp_heuristic) never overrides an
+         exact one (manual, id_confirmed, ig_confirmed) already on record --
+         only the user's own action (another manual write, e.g. unflag)
+         clears a manual flag, short of rule 1.
+    """
+    if proposed["origin"] == "id_confirmed":
+        return proposed
+    if existing is not None:
+        if existing["status"] == "renamed":
+            return existing
+        if existing["origin"] not in _WEAK_ORIGINS and proposed["origin"] in _WEAK_ORIGINS:
+            return existing
+    return proposed
+
+
+def _reconciliation_path_for(flags_path: Path) -> Path:
+    return flags_path.with_name("reconciliation.json")
+
+
+def _read_legacy_flag_list(path: Path) -> set[str]:
+    """Read one flat JSON username list -- the pre-reconciliation.json
+    disabledaccounts.json format. Missing/malformed -> empty set. Only used
+    by the one-time migration below."""
     if not path.exists():
         return set()
     try:
@@ -395,35 +452,117 @@ def _read_flagged_file(path: Path) -> set[str]:
     return {str(u).strip().lower() for u in raw if u}
 
 
+def _migrate_legacy_reconciliation(flags_path: Path) -> dict[str, dict]:
+    """Build reconciliation.json's initial content from the two files it
+    replaces, on first read only: flagged handles -> disabled/manual, and
+    identities.json's old `renames` ledger (only ever written by
+    record_live_identities, so always id_confirmed) -> renamed/id_confirmed.
+    """
+    now = _now_iso()
+    records: dict[str, dict] = {}
+    for username in _read_legacy_flag_list(flags_path):
+        records[username] = {"status": "disabled", "origin": "manual", "updated_at": now}
+    try:
+        identities = json.loads(flags_path.with_name("identities.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        identities = {}
+    renames = identities.get("renames") if isinstance(identities, dict) else None
+    if isinstance(renames, dict):
+        for old, new in renames.items():
+            if isinstance(old, str) and isinstance(new, str):
+                records[old.strip().lower()] = {
+                    "status": "renamed", "origin": "id_confirmed",
+                    "renamed_to": new, "updated_at": now,
+                }
+    return records
+
+
+def _read_reconciliation_file(flags_path: Path) -> dict[str, dict]:
+    path = _reconciliation_path_for(flags_path)
+    if not path.exists():
+        records = _migrate_legacy_reconciliation(flags_path)
+        _atomic_json(path, records)
+        return records
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_reconciliation_file(flags_path: Path, records: dict[str, dict]) -> None:
+    _atomic_json(_reconciliation_path_for(flags_path), records)
+
+
+def _read_reconciliation() -> dict[str, dict]:
+    """Read the active profile's reconciliation records."""
+    return _read_reconciliation_file(DISABLED_FILE)
+
+
+def _write_reconciliation(records: dict[str, dict]) -> None:
+    _write_reconciliation_file(DISABLED_FILE, records)
+
+
+def _read_flagged_file(path: Path) -> set[str]:
+    """Usernames whose reconciliation status is 'disabled', for the profile
+    at `path`. Kept as its own function -- almost every existing caller only
+    ever wants set membership, not the full record."""
+    records = _read_reconciliation_file(path)
+    return {u for u, r in records.items() if isinstance(r, dict) and r.get("status") == "disabled"}
+
+
 def _read_flagged() -> set[str]:
     """Read the active profile's saved disabled-account handles."""
     return _read_flagged_file(DISABLED_FILE)
 
 
 def _write_flagged_file(path: Path, handles: set[str]) -> None:
-    _atomic_json(path, sorted(handles))
+    """Bulk-set the disabled set for the profile at `path` to exactly
+    `handles`, diffed against the current reconciliation state so each change
+    still goes through resolve_reconciliation_status -- a heuristic reenable
+    cannot silently undo a manual flag, same as any other write here."""
+    with _STATE_LOCK:
+        current = _read_flagged_file(path)
+        newly_disabled, newly_cleared = handles - current, current - handles
+        if not newly_disabled and not newly_cleared:
+            return
+        records = _read_reconciliation_file(path)
+        now = _now_iso()
+        for username in newly_disabled:
+            records[username] = resolve_reconciliation_status(
+                records.get(username), {"status": "disabled", "origin": "heuristic", "updated_at": now})
+        for username in newly_cleared:
+            records[username] = resolve_reconciliation_status(
+                records.get(username), {"status": "active", "origin": "heuristic", "updated_at": now})
+        _write_reconciliation_file(path, records)
 
 
 def _write_flagged(handles: set[str]) -> None:
-    """Atomic write via temp-file rename so a crash mid-write can't corrupt
-    the user's curated list."""
     _write_flagged_file(DISABLED_FILE, handles)
 
 
 def add_flagged(username: str) -> list[str]:
-    """Append username to data/disabledaccounts.json (lowercased, deduped). Atomic."""
-    handles = _read_flagged()
-    handles.add(username.strip().lower())
-    _write_flagged(handles)
-    return sorted(handles)
+    """Manually mark a handle disabled. Atomic; manual origin always wins
+    over a prior manual or heuristic status (rule 3), short of a proven
+    id_confirmed rename (rule 1)."""
+    username = username.strip().lower()
+    with _STATE_LOCK:
+        records = _read_reconciliation()
+        records[username] = resolve_reconciliation_status(
+            records.get(username), {"status": "disabled", "origin": "manual", "updated_at": _now_iso()})
+        _write_reconciliation(records)
+    return sorted(_read_flagged())
 
 
 def unflag(username: str) -> list[str]:
-    """Remove username from data/disabledaccounts.json if present. Atomic."""
-    handles = _read_flagged()
-    handles.discard(username.strip().lower())
-    _write_flagged(handles)
-    return sorted(handles)
+    """Manually clear a handle's disabled status. Atomic."""
+    username = username.strip().lower()
+    with _STATE_LOCK:
+        records = _read_reconciliation()
+        records[username] = resolve_reconciliation_status(
+            records.get(username), {"status": "active", "origin": "manual", "updated_at": _now_iso()})
+        _write_reconciliation(records)
+    return sorted(_read_flagged())
 
 
 # ---------- disabled-account network detection (opt-in) ----------
@@ -519,30 +658,37 @@ def instagram_login_state() -> str:
 
 
 def start_instagram_login() -> str:
-    """Launch the visible Chrome login window as a detached subprocess."""
+    """Launch the visible Chrome login window as a detached subprocess.
+
+    ponytail: the server is threaded, so two POST /login-instagram calls can
+    now race this check-then-act -- lock it rather than launching two Chrome
+    windows onto the same session dir.
+    """
     global _LOGIN_PROC
     command = _ig_helper_command("login", [])
     if command is None or not _ig_deps_available():
         raise RuntimeError("Instagram login is not available")
     if not _chrome_available():
         raise RuntimeError("Google Chrome is not installed")
-    if _LOGIN_PROC is not None and _LOGIN_PROC.poll() is None:
-        return "in_progress"
-    _LOGIN_PROC = subprocess.Popen(
-        command,
-        cwd=IG_SESSION_DIR.parent if IG_SESSION_DIR else None,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    with _LOGIN_PROC_LOCK:
+        if _LOGIN_PROC is not None and _LOGIN_PROC.poll() is None:
+            return "in_progress"
+        _LOGIN_PROC = subprocess.Popen(
+            command,
+            cwd=IG_SESSION_DIR.parent if IG_SESSION_DIR else None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
     return "in_progress"
 
 
 def stop_instagram_login() -> None:
     """Terminate an in-flight visible login helper during app shutdown."""
     global _LOGIN_PROC
-    proc, _LOGIN_PROC = _LOGIN_PROC, None
+    with _LOGIN_PROC_LOCK:
+        proc, _LOGIN_PROC = _LOGIN_PROC, None
     if proc is not None and proc.poll() is None:
         proc.terminate()
         try:
@@ -710,9 +856,54 @@ def _authenticated_relationships(username: str) -> dict[str, dict[str, str]] | N
         if all(isinstance(v, int) and v >= 0 for v in live.values()):
             active = _profiles_payload()["active_profile_id"]
             if active:
-                LIVE_PROFILE_COUNTS[active] = live
+                LIVE_PROFILE_COUNTS[active] = _stamp_live_counts(live)
     _RELATIONSHIPS_CACHE[username] = (time.time(), out)
     return out
+
+
+# ADR 0001: a cached live count carries an as-of time and is surfaced as
+# stale past this TTL rather than presented as current fact. A stale entry is
+# still served immediately (see _kick_live_counts_refresh) -- never block a
+# request behind a fresh Chrome-backed fetch.
+LIVE_COUNTS_TTL_SECONDS = 6 * 60 * 60
+_LIVE_REFRESH_LOCK = threading.Lock()
+_LIVE_REFRESH_IN_FLIGHT: set[str] = set()
+
+
+def _stamp_live_counts(counts: dict[str, int]) -> dict[str, int]:
+    return {**counts, "as_of": time.time()}
+
+
+def _live_count_is_stale(as_of: float | None, *, now: float | None = None) -> bool:
+    if as_of is None:
+        return True
+    return (now if now is not None else time.time()) - as_of >= LIVE_COUNTS_TTL_SECONDS
+
+
+def _kick_live_counts_refresh(profile_id: str, profile_name: str) -> None:
+    """Async forced re-fetch for a stale cached entry, kicked by /live-counts
+    only. Never blocks the caller; the next poll picks up the fresh value
+    once this finishes. One in-flight refresh per profile -- a second call
+    while one is running is a no-op, not a queued second Chrome launch. No
+    _STATE_LOCK needed: this is a single in-memory dict assignment, not a
+    read-modify-write on reconciliation.json, and it's already serialized
+    against other network calls via _IG_HELPER_LOCK.
+    """
+    with _LIVE_REFRESH_LOCK:
+        if profile_id in _LIVE_REFRESH_IN_FLIGHT:
+            return
+        _LIVE_REFRESH_IN_FLIGHT.add(profile_id)
+
+    def work() -> None:
+        try:
+            counts = _authenticated_profile_counts(profile_name)
+            if counts is not None:
+                LIVE_PROFILE_COUNTS[profile_id] = _stamp_live_counts(counts)
+        finally:
+            with _LIVE_REFRESH_LOCK:
+                _LIVE_REFRESH_IN_FLIGHT.discard(profile_id)
+
+    threading.Thread(target=work, name="live-counts-refresh", daemon=True).start()
 
 
 def _live_profile_counts() -> dict[str, int] | None:
@@ -725,7 +916,8 @@ def _live_profile_counts() -> dict[str, int] | None:
     profile = next(p for p in payload["profiles"] if p.get("id") == active)
     counts = _authenticated_profile_counts(profile["name"])
     if counts is not None:
-        LIVE_PROFILE_COUNTS[active] = counts
+        LIVE_PROFILE_COUNTS[active] = _stamp_live_counts(counts)
+        counts = LIVE_PROFILE_COUNTS[active]
     return counts
 
 
@@ -733,9 +925,10 @@ def cached_live_profile_counts() -> dict[str, int] | None:
     """Live counts ONLY if a previous /live-counts call already fetched them.
 
     _live_profile_counts() can spawn a headless Chrome and block for up to 90
-    seconds. The server is single-threaded, so calling it from the count audit
-    would stall the whole page on load. The UI asks /live-counts on every load
-    anyway; this reads whatever that left behind and otherwise reports unknown.
+    seconds (longer still if it queues behind a scan/recheck job holding
+    _IG_HELPER_LOCK). Calling it from the count audit would stall that
+    request for no reason -- the UI already asks /live-counts on every load,
+    so this just reads whatever that left behind and otherwise reports unknown.
     """
     active = _profiles_payload()["active_profile_id"]
     return LIVE_PROFILE_COUNTS.get(active) if active else None
@@ -761,8 +954,18 @@ def recheck_flagged_accounts_by_network(*, timeout: float = 4.0,
         status = "re-enabled" if verdict is False else ("disabled" if verdict is True else "unchanged")
         print(f"  [saved flag] @{username}: {status}", flush=True)
     if reenabled:
-        _write_flagged(flagged - set(reenabled))
-        print(f"restored {len(reenabled)} re-enabled account(s)", flush=True)
+        # Re-read fresh under the lock rather than reusing the pre-probe
+        # `flagged` snapshot -- the probe loop above can take a while, and
+        # diffing against a stale snapshot could clear a flag another writer
+        # added in the meantime. A manually-flagged handle blocks a heuristic
+        # clear (rule 3), so the actual change can be smaller than
+        # `reenabled` -- diff before/after rather than trusting the verdicts.
+        with _STATE_LOCK:
+            before = _read_flagged()
+            _write_flagged(before - set(reenabled))
+            reenabled = sorted(before - _read_flagged())
+        if reenabled:
+            print(f"restored {len(reenabled)} re-enabled account(s)", flush=True)
     return reenabled
 
 
@@ -1060,7 +1263,9 @@ def _identity_path() -> Path:
 
 
 def _read_identities() -> dict:
-    """{"ids": {instagram_id: username}, "renames": {old_handle: new_handle}}"""
+    """{"ids": {instagram_id: username}} -- the raw id evidence a
+    reconciliation status is built from, not itself a status. Renames
+    themselves live in reconciliation.json now (status "renamed")."""
     try:
         payload = json.loads(_identity_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -1068,17 +1273,16 @@ def _read_identities() -> dict:
     if not isinstance(payload, dict):
         payload = {}
     ids = payload.get("ids")
-    renames = payload.get("renames")
-    return {
-        "ids": ids if isinstance(ids, dict) else {},
-        "renames": renames if isinstance(renames, dict) else {},
-    }
+    return {"ids": ids if isinstance(ids, dict) else {}}
 
 
 def known_renames() -> dict[str, str]:
     """Every recorded username change, each old handle resolved to the handle
     the account carries now."""
-    return _resolve_chain(_read_identities()["renames"])
+    records = _read_reconciliation()
+    raw = {u: r["renamed_to"] for u, r in records.items()
+           if isinstance(r, dict) and r.get("status") == "renamed" and isinstance(r.get("renamed_to"), str)}
+    return _resolve_chain(raw)
 
 
 def record_live_identities(relationships: dict[str, dict[str, str]]) -> dict[str, str]:
@@ -1091,36 +1295,53 @@ def record_live_identities(relationships: dict[str, dict[str, str]]) -> dict[str
         released and re-registered by someone else, so any rename recorded
         against it is stale and gets dropped rather than left to silently
         rewrite an unrelated person's row.
+
+    Rename evidence goes to reconciliation.json as renamed/id_confirmed,
+    which beats every other status by rule 1, including a manual disabled
+    flag; `ids` stays in identities.json, the raw evidence this is built
+    from.
     """
-    store = _read_identities()
-    ids, renames = dict(store["ids"]), dict(store["renames"])
-    live: dict[str, str] = {}
-    for side in ("followers", "following"):
-        for username, pk in relationships.get(side, {}).items():
-            if pk:
-                live[pk] = username
+    with _STATE_LOCK:
+        store = _read_identities()
+        ids = dict(store["ids"])
+        live: dict[str, str] = {}
+        for side in ("followers", "following"):
+            for username, pk in relationships.get(side, {}).items():
+                if pk:
+                    live[pk] = username
 
-    fresh: dict[str, str] = {}
-    for pk, username in live.items():
-        previous = ids.get(pk)
-        if previous and previous != username:
-            fresh[previous] = username
-            renames[previous] = username
-        ids[pk] = username
+        fresh: dict[str, str] = {}
+        for pk, username in live.items():
+            previous = ids.get(pk)
+            if previous and previous != username:
+                fresh[previous] = username
+            ids[pk] = username
 
-    # A handle that is live right now is somebody's current handle, so any
-    # rename recorded *away* from it is stale -- either the person renamed
-    # back, or the handle was released and re-registered by someone else.
-    # Leaving it would silently rewrite an unrelated person's row.
-    for username in live.values():
-        if username in renames and username not in fresh:
-            renames.pop(username, None)
+        if ids != store["ids"]:
+            try:
+                _atomic_json(_identity_path(), {"ids": ids})
+            except OSError as e:
+                print(f"warning: could not update {_identity_path().name}: {e}", file=sys.stderr)
 
-    if ids != store["ids"] or renames != store["renames"]:
-        try:
-            _atomic_json(_identity_path(), {"ids": ids, "renames": renames})
-        except OSError as e:
-            print(f"warning: could not update {_identity_path().name}: {e}", file=sys.stderr)
+        records = _read_reconciliation()
+        now = _now_iso()
+        changed = False
+        for old, new in fresh.items():
+            records[old] = resolve_reconciliation_status(
+                records.get(old),
+                {"status": "renamed", "origin": "id_confirmed", "renamed_to": new, "updated_at": now})
+            changed = True
+        # A handle that is live right now is somebody's current handle, so any
+        # renamed status recorded *away* from it is stale -- either the person
+        # renamed back, or the handle was released and re-registered by
+        # someone else. Leaving it would silently rewrite an unrelated
+        # person's row.
+        for username in live.values():
+            if username not in fresh and records.get(username, {}).get("status") == "renamed":
+                del records[username]
+                changed = True
+        if changed:
+            _write_reconciliation(records)
     return _resolve_chain(fresh)
 
 
@@ -1380,7 +1601,26 @@ def scan_handles_for_disabled(usernames: list[str], *, timeout: float = 8.0,
         tally = {v: sum(1 for x in verdicts.values() if x == v) for v in (GONE, ACTIVE, UNVERIFIED)}
         print(f"  [{label}] {len(usernames)} checked, {tally[GONE]} gone, "
               f"{tally[ACTIVE]} active, {tally[UNVERIFIED]} unverified", flush=True)
+    _persist_scan_verdicts(verdicts)
     return verdicts
+
+
+def _persist_scan_verdicts(verdicts: dict[str, str]) -> None:
+    """Record what a scan found, for the stat card's 'N unconfirmed' trail.
+    Never writes 'disabled' -- nothing is auto-flagged, the scan reports and
+    the user decides (see POST /count-audit's docstring); a GONE verdict only
+    ever reaches disabled through the user clicking Flag."""
+    relevant = {u: v for u, v in verdicts.items() if v in (ACTIVE, UNVERIFIED)}
+    if not relevant:
+        return
+    with _STATE_LOCK:
+        records = _read_reconciliation()
+        now = _now_iso()
+        for username, verdict in relevant.items():
+            status = "active" if verdict == ACTIVE else "unverified"
+            records[username] = resolve_reconciliation_status(
+                records.get(username), {"status": status, "origin": "heuristic", "updated_at": now})
+        _write_reconciliation(records)
 
 
 def _reconcile_side(counts: dict, live: dict | None, side: str) -> dict:
@@ -1389,13 +1629,23 @@ def _reconcile_side(counts: dict, live: dict | None, side: str) -> dict:
     unique = counts[side]
     active = counts[f"active_{side}"]
     live_value = (live or {}).get(side)
+    as_of = (live or {}).get("as_of")
+    flagged = counts.get(f"flagged_{side}", unique - active)
     return {
         "records":    counts.get(f"{'follower' if side == 'followers' else 'following'}_records", unique),
         "unique":     unique,
         "duplicates": counts.get(f"duplicate_{side}", 0),
-        "flagged":    counts.get(f"flagged_{side}", unique - active),
+        "flagged":    flagged,
+        # ADR 0001: reconciliation.json's "disabled" status supersedes the
+        # old "flagged" name. Same value -- added alongside rather than a
+        # rename so nothing already reading `flagged` breaks.
+        "disabled":   flagged,
+        "unverified": counts.get(f"unverified_{side}", 0),
+        "unchecked":  counts.get(f"unchecked_{side}", 0),
         "active":     active,
         "live":       live_value if isinstance(live_value, int) else None,
+        "as_of":      as_of,
+        "stale":      _live_count_is_stale(as_of) if as_of is not None else None,
         # Positive gap = the export lists more accounts than instagram.com
         # shows, which is what deactivated/deleted accounts look like.
         "gap":        (active - live_value) if isinstance(live_value, int) else None,
@@ -1434,13 +1684,22 @@ def audit_counts(*, check_network: bool = False, scope: str = "both",
 
     flagged = _read_flagged()
     summary, raw_followers, raw_following = read_snapshot(folder, flagged)
-    counts = summary["counts"]
+    counts = dict(summary["counts"])
     # The CLI has no page to stall, so it may pay for a live fetch; the HTTP
     # handler must not, so it reads the cache the UI has already warmed.
     try:
         live = _live_profile_counts() if fetch_live else cached_live_profile_counts()
     except OSError:
         live = None
+
+    # A past scan's inconclusive verdicts, layered onto the arithmetic above
+    # without changing it -- an unverified handle still counts toward active
+    # (an unclear probe is not evidence of anything, same as looks_disabled's
+    # own None handling), it's *also* surfaced so the card can say so.
+    reconciliation = _read_reconciliation()
+    for side, pool in (("followers", raw_followers), ("following", raw_following)):
+        counts[f"unverified_{side}"] = sum(
+            1 for r in pool if reconciliation.get(r["username"], {}).get("status") == "unverified")
 
     audit = {
         "date_folder": summary["date_folder"],
@@ -1536,6 +1795,17 @@ def audit_counts(*, check_network: bool = False, scope: str = "both",
             for record in departed_by_side[side]:
                 departed_by_username.setdefault(record["username"], record)
 
+        # "unchecked" is scoped to exactly this: a candidate this scan meant
+        # to verify but the MISSING_VERIFY_LIMIT cap left untouched -- not
+        # every handle nobody has ever probed, which would be nearly the
+        # user's whole list and defeat the point of a quiet default card.
+        unchecked_by_side = {"followers": 0, "following": 0}
+        if truncated:
+            unchecked_names = set(names[MISSING_VERIFY_LIMIT:])
+            for side in wanted:
+                unchecked_by_side[side] = sum(
+                    1 for r in missing_by_side[side] if r["username"] in unchecked_names)
+
         audit["scan"] = {
             "scope": scope,
             "checked": len(checked),
@@ -1561,6 +1831,8 @@ def audit_counts(*, check_network: bool = False, scope: str = "both",
             "gone": [],
             "unverified": [],
         }
+        for side in wanted:
+            audit[side]["unchecked"] = unchecked_by_side[side]
         return audit
 
     if not check_network:
@@ -1595,10 +1867,11 @@ def audit_counts(*, check_network: bool = False, scope: str = "both",
 
 # ---------- background scan job ----------
 
-# The http server is single-threaded, so a scan that walks a whole following
-# list through a headless browser would hold the socket for minutes and freeze
-# the page it was launched from. The scan runs on its own thread instead and
-# the UI polls /scan-status.
+# A scan that walks a whole following list through a headless browser can run
+# for up to _relationships_timeout()'s 30 minutes. Even on a threaded server,
+# holding one request open that long would time out the browser tab that
+# launched it and tie up a thread doing nothing but waiting. The scan runs on
+# its own thread instead and the UI polls /scan-status.
 _SCAN_LOCK = threading.Lock()
 _SCAN_JOB: dict = {"state": "idle", "checked": 0, "total": 0,
                    "audit": None, "error": None, "profile_id": None,
@@ -1779,21 +2052,25 @@ def start_recheck_job(*, force: bool = False) -> dict | None:
                     })
                 return
 
-            record_live_identities(relationships)
-            renamed = known_renames()
-            current = _read_flagged_file(flags_path)
-            live = relationships["followers"].keys() | relationships["following"].keys()
-            # A flagged handle whose owner simply renamed is not disabled. The
-            # ledger proves that by id, so clear the flag on the old handle
-            # too -- otherwise the person stays hidden in the disabled panel
-            # forever under a name nobody uses any more. The whole ledger is
-            # consulted, not just what this fetch proved, so a rename recorded
-            # weeks ago still frees its old handle.
-            reenabled = sorted(current & (live | {old for old, new in renamed.items()
-                                                  if new in live}))
-            if reenabled:
-                _write_flagged_file(flags_path, current - set(reenabled))
-            remaining = len(current) - len(reenabled)
+            # A flagged handle whose owner simply renamed is not disabled --
+            # record_live_identities() moves it to renamed/id_confirmed,
+            # which always wins (rule 1), including over a manual flag. A
+            # handle that's merely live under its own name is weaker
+            # evidence (no id proof, just list membership) and must not
+            # clear a manual flag (rule 3) -- only the user's own unflag or a
+            # proven rename does. One lock spans both so nothing else can
+            # write reconciliation.json between the id-fold and this read.
+            with _STATE_LOCK:
+                before = _read_flagged_file(flags_path)
+                record_live_identities(relationships)
+                live = relationships["followers"].keys() | relationships["following"].keys()
+                current = _read_flagged_file(flags_path)
+                candidates = current & live
+                if candidates:
+                    _write_flagged_file(flags_path, current - candidates)
+                current = _read_flagged_file(flags_path)
+                reenabled = sorted(before - current)
+            remaining = len(current)
             if reenabled and _profiles_payload()["active_profile_id"] == profile_id:
                 _refresh_active_report()
             _record_recheck(flags_path, success=True)
@@ -2030,6 +2307,17 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
                 counts = _live_profile_counts()
                 response = {"ok": True, "counts": counts}
                 if counts is not None:
+                    # /live-counts is the sole trigger for a refresh: a stale
+                    # entry is still served immediately, and this kicks an
+                    # async re-fetch rather than blocking behind one.
+                    stale = _live_count_is_stale(counts.get("as_of"))
+                    response["stale"] = stale
+                    if stale:
+                        payload = _profiles_payload()
+                        active = payload["active_profile_id"]
+                        profile = next((p for p in payload["profiles"] if p.get("id") == active), None)
+                        if profile is not None:
+                            _kick_live_counts_refresh(active, profile["name"])
                     try:
                         job = start_recheck_job(force=False)
                     except RuntimeError:
@@ -2141,8 +2429,12 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(400, "missing username")
             return
         try:
-            new_list = unflag(username) if action == "remove" else add_flagged(username)
-            _refresh_active_report()
+            # One lock acquisition covering both calls, not two, or a
+            # concurrent writer could land between the flag write and the
+            # report rebuild and get silently overwritten by it.
+            with _STATE_LOCK:
+                new_list = unflag(username) if action == "remove" else add_flagged(username)
+                _refresh_active_report()
         except OSError as e:
             self.send_error(500, f"could not refresh flagged accounts: {e}")
             return
@@ -2199,8 +2491,8 @@ class FlagHandler(http.server.SimpleHTTPRequestHandler):
                             Returns immediately; poll GET /scan-status.
 
         ponytail: the sweep walks a whole following list through a headless
-        browser, which is minutes of work, and this server is single-threaded.
-        Running it inline would hold the socket and freeze the very page that
+        browser, which is minutes of work. Running it inline would hold this
+        request's thread the whole time and time out the very page that
         launched it, so POST only starts the job. Nothing is auto-flagged: the
         scan reports, the user decides, because "Instagram wouldn't answer" is
         not evidence an account is gone.
@@ -2506,13 +2798,22 @@ def _run_server(port: int, handler_cls: type = FlagHandler) -> http.server.HTTPS
     %APPDATA% while everything else still resolves under the bundled
     PyInstaller MEIPASS dir. Default stays FlagHandler — every existing
     caller's behavior is preserved.
+    ponytail: ThreadingHTTPServer (stdlib), not plain HTTPServer -- a single
+    slow handler (e.g. /live-counts blocked behind a scan/recheck job's
+    _IG_HELPER_LOCK, held up to 30 minutes) used to freeze every other
+    request on the one socket-accept thread. daemon_threads defaults to True
+    on ThreadingHTTPServer, so a still-blocked handler thread never holds up
+    server_close(). The only in-process state that assumed "one request at a
+    time" was _LOGIN_PROC (now under _LOGIN_PROC_LOCK, see
+    start_instagram_login) -- everything else (job dicts, caches, flag files)
+    was already written to tolerate a concurrent background job thread.
     """
     handler = functools.partial(handler_cls, directory=str(ROOT))
 
     # ponytail: local subclass so the SO_REUSEADDR knob stays inside this
     # function. Mutating http.server.HTTPServer.allow_reuse_address globally
     # would leak the flag into any other HTTPServer construction in the process.
-    class _Server(http.server.HTTPServer):
+    class _Server(http.server.ThreadingHTTPServer):
         allow_reuse_address = sys.platform != "win32"
 
         def handle_error(self, request, client_address) -> None:
@@ -2884,16 +3185,35 @@ def run_analyze(args: argparse.Namespace) -> None:
     for old, new in sorted(renamed.items()):
         label = "deleted" if old in deleted else f"renamed -> @{new}"
         print(f"  [{label}] @{old}", flush=True)
-    # Renamed people are not disabled; tombstoned ones provably are.
+    # Renamed people are not disabled; tombstoned ones provably are. Most
+    # id_confirmed renames are already reflected in `flagged` by the time we
+    # get here (record_live_identities' writes already win over a manual flag
+    # per rule 1) -- what's left in stale_flags is mainly the offline
+    # timestamp-heuristic renames renames_across() just found, which haven't
+    # been persisted yet and must still lose to a manual flag (rule 3).
     stale_flags = (flagged & renamed.keys()) - deleted
     new_flags = deleted - flagged
     if stale_flags or new_flags:
-        flagged = (flagged - stale_flags) | new_flags
-        _write_flagged(flagged)
-        if stale_flags:
-            print(f"unflagged {len(stale_flags)} renamed account(s) wrongly marked disabled", flush=True)
-        if new_flags:
-            print(f"flagged {len(new_flags)} deleted account(s)", flush=True)
+        with _STATE_LOCK:
+            records = _read_reconciliation()
+            now = _now_iso()
+            for old in stale_flags:
+                records[old] = resolve_reconciliation_status(
+                    records.get(old),
+                    {"status": "renamed", "origin": "timestamp_heuristic",
+                     "renamed_to": renamed[old], "updated_at": now})
+            for old in new_flags:
+                records[old] = resolve_reconciliation_status(
+                    records.get(old),
+                    {"status": "disabled", "origin": "ig_confirmed", "updated_at": now})
+            _write_reconciliation(records)
+            new_flagged = _read_flagged()
+        actually_cleared, actually_added = flagged - new_flagged, new_flagged - flagged
+        flagged = new_flagged
+        if actually_cleared:
+            print(f"unflagged {len(actually_cleared)} renamed account(s) wrongly marked disabled", flush=True)
+        if actually_added:
+            print(f"flagged {len(actually_added)} deleted account(s)", flush=True)
         snapshots = [read_snapshot(folder, flagged)[0] for folder in folders]
 
     # ponytail: keep week-over-week folds in report.json for JSON consumers;
