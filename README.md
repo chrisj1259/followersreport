@@ -1,8 +1,13 @@
 # Instagram Follower Report
 
-![Build Windows Installer](https://github.com/chrisj1259/removedfollowers/actions/workflows/build.yml/badge.svg)
+![Build Windows Installer](https://github.com/chrisj1259/followersreport/actions/workflows/build.yml/badge.svg)
 
 A local-first Windows desktop app (and CLI) that reads your Instagram data export and shows you who's unfollowed you, who you don't follow back, and who you share mutual follows with. Runs entirely on your machine; nothing is uploaded.
+
+**At a glance**
+- **What:** compares Instagram data-export snapshots over time to find unfollows, non-mutuals, and likely disabled accounts.
+- **Built with:** Python, a single-page HTML/JS UI in pywebview, PyInstaller + Inno Setup for the Windows installer, GitHub Actions to build releases.
+- **Engineering:** local-first (no data leaves the machine), per-account snapshot history, auto-update check against GitHub releases, unit tests (`test_ig_helper.py`, `test_updates.py`).
 
 ## What you get
 
